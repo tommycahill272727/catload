@@ -1,0 +1,1850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>CatLoad — Catalyst Loading Calculator</title>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>*{box-sizing:border-box;margin:0;padding:0;}html,body,#root{height:100%;}body{background:#060f1e;color:#e2e8f0;font-family:'Sora','Segoe UI',sans-serif;font-size:14px;}input,select,button{font-family:'Sora','Segoe UI',sans-serif;}input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;}input::placeholder{color:#253d5b;}select option{background:#0d1829;}::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:4px;}button,select,input{-webkit-tap-highlight-color:transparent;}.hrow:hover{background:#0d1829!important;}.lcard:hover .dh{opacity:1!important;}</style>
+<script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useMemo, useRef } = React;
+
+/* ─── constants ──────────────────────────────────── */
+const LB_PER_KG  = 2.20462;
+const FT3_PER_M3 = 35.3147;
+const IN_PER_M   = 39.3701;
+
+/* ─── math ───────────────────────────────────────── */
+const nv   = v => parseFloat(v) || 0;
+const safe = v => (v == null || isNaN(v) || !isFinite(v)) ? null : v;
+const fmt  = (v, d=2) => safe(v)==null ? "—" : v.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmtI = v => safe(v)==null ? "—" : Math.ceil(v).toLocaleString("en-US");
+const XS   = D => Math.PI*(D/2)**2;
+const cylV = (D,H) => XS(D)*H;
+function headVol(type,D){
+  if(!D||D<=0) return 0;
+  switch(type){
+    case"ellipsoidal":   return Math.PI*D**3/24;
+    case"hemispherical": return(2/3)*Math.PI*(D/2)**3;
+    case"fd":            return 0.0847*D**3;
+    default: return 0;
+  }
+}
+
+/* ─── tokens ─────────────────────────────────────── */
+const C={bg:"#060f1e",panel:"#0d1829",card:"#111f35",border:"#1e3a5f",
+  accent:"#38bdf8",amber:"#f59e0b",green:"#34d399",red:"#f87171",
+  purple:"#a78bfa",text:"#e2e8f0",muted:"#475569",dim:"#253d5b",teal:"#2dd4bf"};
+const LC={icb:"#38bdf8",catalyst:"#a78bfa",inert:"#f59e0b",support:"#34d399"};
+const LL={icb:"ICB / Inert Ball",catalyst:"Catalyst Bed",inert:"Inert Top Layer",support:"Support Grading"};
+
+/* ─── defaults ───────────────────────────────────── */
+const makeCat=i=>({id:`cat${i}`,kind:"catalyst",name:`Catalyst ${i}`,density:"",drumWt:"",bagWt:""});
+const makeIcb=i=>({id:`icb${i}`,kind:"icb",name:`ICB ${i}`,density:"",drumWt:"",bagWt:""});
+let _lid=100;
+let _dsid=200;
+let _dchkid=300;
+let _soId=500;
+const newLayer=(type="catalyst")=>({
+  id:_lid++,type,name:LL[type],materialId:"",
+  targetThick:"",actualThick:"",targetDensity:"",actualDensity:"",
+  estContainers:null,actualContainers:"",
+  finalOutage:"",          // final outage for this layer (from top tangent)
+  subOutages:[],           // [{id,drums,outage}] — interim measurements
+});
+
+/* ─── UI primitives ──────────────────────────────── */
+const Label=({children,style})=>(
+  <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.12em",color:C.muted,textTransform:"uppercase",marginBottom:5,...style}}>{children}</div>
+);
+const Hint=({children})=>(
+  <div style={{fontSize:10,color:C.dim,marginTop:4,lineHeight:1.45}}>{children}</div>
+);
+const STitle=({children,color})=>(
+  <div style={{fontSize:11,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:color||C.accent,marginBottom:14,display:"flex",alignItems:"center",gap:8}}>
+    <div style={{width:3,height:13,background:color||C.accent,borderRadius:2,flexShrink:0}}/>
+    {children}
+  </div>
+);
+const Card=({children,style})=>(
+  <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:18,...style}}>{children}</div>
+);
+const TInp=({value,onChange,placeholder,unit,disabled,small})=>(
+  <div style={{position:"relative"}}>
+    <input type="number" value={value} onChange={e=>onChange(e.target.value)}
+      placeholder={placeholder||""} disabled={disabled}
+      style={{width:"100%",background:disabled?"#070f1c":C.panel,border:`1px solid ${C.border}`,borderRadius:7,
+        color:disabled?C.dim:C.text,fontSize:small?12:14,fontFamily:"inherit",
+        padding:unit?(small?"6px 40px 6px 10px":"9px 44px 9px 12px"):(small?"6px 10px":"9px 12px"),
+        outline:"none",transition:"border-color 0.15s"}}
+      onFocus={e=>{if(!disabled)e.target.style.borderColor=C.accent}}
+      onBlur={e=>e.target.style.borderColor=C.border}/>
+    {unit&&<span style={{position:"absolute",right:9,top:"50%",transform:"translateY(-50%)",fontSize:10,color:C.dim,pointerEvents:"none"}}>{unit}</span>}
+  </div>
+);
+const TxtInp=({value,onChange,placeholder,small})=>(
+  <input type="text" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder||""}
+    style={{width:"100%",background:C.panel,border:`1px solid ${C.border}`,borderRadius:7,
+      color:C.text,fontSize:small?12:14,fontFamily:"inherit",
+      padding:small?"6px 10px":"9px 12px",outline:"none",transition:"border-color 0.15s"}}
+    onFocus={e=>e.target.style.borderColor=C.accent}
+    onBlur={e=>e.target.style.borderColor=C.border}/>
+);
+const Sel=({value,onChange,children,small})=>(
+  <select value={value} onChange={e=>onChange(e.target.value)}
+    style={{width:"100%",background:C.panel,border:`1px solid ${C.border}`,borderRadius:7,color:C.text,
+      fontSize:small?12:13,fontFamily:"inherit",padding:small?"6px 10px":"9px 12px",outline:"none",cursor:"pointer"}}>
+    {children}
+  </select>
+);
+const Toggle=({options,value,onChange,small})=>(
+  <div style={{display:"flex",background:C.panel,borderRadius:8,padding:3,gap:2}}>
+    {options.map(({id,label})=>(
+      <button key={id} onClick={()=>onChange(id)} style={{flex:1,padding:small?"5px 0":"7px 0",borderRadius:6,border:"none",
+        background:value===id?C.accent:"transparent",color:value===id?"#060f1e":C.muted,
+        fontSize:small?10:12,fontWeight:700,fontFamily:"inherit",cursor:"pointer",transition:"all 0.15s"}}>{label}</button>
+    ))}
+  </div>
+);
+const RRow=({label,value,unit,hi,warn,sub})=>(
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"7px 0",borderBottom:"1px solid #0a1626"}}>
+    <span style={{fontSize:11,color:C.muted}}>{label}</span>
+    <div style={{textAlign:"right"}}>
+      <span style={{fontSize:hi?20:14,fontWeight:hi?800:600,color:warn?C.amber:hi?C.accent:C.text}}>{value}</span>
+      {unit&&<span style={{fontSize:10,color:C.dim,marginLeft:4}}>{unit}</span>}
+      {sub&&<div style={{fontSize:10,color:C.dim}}>{sub}</div>}
+    </div>
+  </div>
+);
+const Divider=()=><div style={{borderTop:`1px solid ${C.border}`,margin:"12px 0"}}/>;
+
+/* ─── MatRow outside App to prevent remount on rerender ─── */
+const MatRow=({mat,accent,updMat,U,units})=>(
+  <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr 1fr 1fr",gap:8,alignItems:"end",padding:"10px 0",borderBottom:"1px solid #0a1626"}}>
+    <div>
+      <Label style={{marginBottom:3,color:accent||C.muted}}>Name</Label>
+      <TxtInp small value={mat.name} onChange={v=>updMat(mat.kind,mat.id,"name",v)} placeholder={mat.kind==="catalyst"?"e.g. NiMo/Al₂O₃":"e.g. ½\" Ceramic"}/>
+    </div>
+    <div>
+      <Label style={{marginBottom:3}}>Bulk Density ({U.dens})</Label>
+      <TInp small value={mat.density} onChange={v=>updMat(mat.kind,mat.id,"density",v)} placeholder={units==="si"?"800":"50"}/>
+    </div>
+    <div>
+      <Label style={{marginBottom:3}}>Wt/Drum ({U.mass})</Label>
+      <TInp small value={mat.drumWt} onChange={v=>updMat(mat.kind,mat.id,"drumWt",v)} placeholder={units==="si"?"136":"300"}/>
+    </div>
+    <div>
+      <Label style={{marginBottom:3}}>Wt/Bag ({U.mass})</Label>
+      <TInp small value={mat.bagWt} onChange={v=>updMat(mat.kind,mat.id,"bagWt",v)} placeholder={units==="si"?"907":"2000"}/>
+    </div>
+  </div>
+);
+
+/* ─── checklist ──────────────────────────────────── */
+const CL_ITEMS=[
+  {id:"s1",g:"Safety",t:"Confined space entry permit issued and posted at entry point"},
+  {id:"s2",g:"Safety",t:"Vessel atmosphere tested — O₂ > 19.5%, LEL < 10%"},
+  {id:"s3",g:"Safety",t:"Full PPE confirmed for all personnel entering vessel"},
+  {id:"s4",g:"Safety",t:"LOTO complete — all energy sources isolated and tagged"},
+  {id:"s5",g:"Safety",t:"All blinds and blanks installed; blinding register signed"},
+  {id:"v1",g:"Vessel Inspection",t:"Interior inspected and cleaned — no debris or residue"},
+  {id:"v2",g:"Vessel Inspection",t:"Support grids and inlet screens seated and undamaged"},
+  {id:"v3",g:"Vessel Inspection",t:"Thermowells confirmed at correct elevation per drawing"},
+  {id:"v4",g:"Vessel Inspection",t:"All nozzles and manways inspected and clear"},
+  {id:"v5",g:"Vessel Inspection",t:"Outlet basket installed and secured per vendor drawing"},
+  {id:"c1",g:"Catalyst",t:"Lot numbers documented and matched to Certificate of Analysis"},
+  {id:"c2",g:"Catalyst",t:"Bags/drums inspected — intact, no moisture or clumping"},
+  {id:"c3",g:"Catalyst",t:"Container count verified against PO quantity"},
+  {id:"l1",g:"Loading",t:"Loading method confirmed with crew"},
+  {id:"l2",g:"Loading",t:"Certified scale on-site and zeroed"},
+  {id:"l3",g:"Loading",t:"Measuring tape or laser level staged for outage measurement"},
+  {id:"l4",g:"Loading",t:"Radios tested — top-of-vessel and ground crew comms confirmed"},
+  {id:"d1",g:"Documentation",t:"Loading log sheet prepared (container #, cumulative mass, elevation)"},
+  {id:"d2",g:"Documentation",t:"Pre-load photographs taken and filed"},
+  {id:"d3",g:"Documentation",t:"Operations notified — loading start time confirmed"},
+];
+const CL_GROUPS=[...new Set(CL_ITEMS.map(i=>i.g))];
+
+/* ═══════════════════════════════════════════════════
+   VESSEL TRACKER VISUAL
+═══════════════════════════════════════════════════ */
+function VesselTracker({layers,layerVolContrib,xs,bedBottomElev,currentBedTopElev,
+  distElevM,clearDist,clearWarnM,totalOutageM,remainingOutage,fillPct,
+  isWarn,isDanger,drumsN,fM,fSm,fKg,fRho,toRho,toKg,U,C,LC,getMat,container,fmt,fmtI}){
+
+  const SVG_W=180, SVG_H=340, px=24;
+  const refH=Math.max(totalOutageM,distElevM,currentBedTopElev+0.2,0.5);
+  const toY=v=>SVG_H - Math.max(0,Math.min(1,v/refH))*SVG_H;
+  const bedColor=isDanger?C.red:isWarn?C.amber:C.accent;
+
+  // Build coloured bed fill segments (bottom to top)
+  let cursor=bedBottomElev;
+  const segments=layers.map((l,i)=>{
+    const vol=layerVolContrib[i]||0;
+    const h=xs>0?vol/xs:0;
+    const seg={layer:l,botElev:cursor,topElev:cursor+h,h};
+    cursor+=h;
+    return seg;
+  }).filter(s=>s.h>0);
+
+  return(
+    <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
+      {/* SVG */}
+      <div style={{flexShrink:0}}>
+        <svg width={SVG_W+50} height={SVG_H+48} viewBox={`0 0 ${SVG_W+50} ${SVG_H+48}`} style={{overflow:"visible"}}>
+          {/* vessel shell */}
+          <rect x={px} y={4} width={SVG_W-px*2} height={SVG_H} rx={4} fill={C.panel} stroke={C.border} strokeWidth={1.5}/>
+
+          {/* bed fill segments — each layer its own colour */}
+          {segments.map((s,i)=>{
+            const col=LC[s.layer.type]||C.accent;
+            const y1=toY(s.topElev)+4;
+            const y2=toY(s.botElev)+4;
+            return <rect key={i} x={px+1} y={y1} width={SVG_W-px*2-2} height={Math.max(1,y2-y1)} fill={`${col}30`} stroke={`${col}60`} strokeWidth={0.5}/>;
+          })}
+
+          {/* current bed top line */}
+          {currentBedTopElev>bedBottomElev&&(
+            <g>
+              <line x1={px} x2={SVG_W-px} y1={toY(currentBedTopElev)+4} y2={toY(currentBedTopElev)+4}
+                stroke={bedColor} strokeWidth={2} strokeDasharray={isDanger?"5,3":"none"}/>
+              <text x={SVG_W-px+4} y={toY(currentBedTopElev)+8} fontSize={8} fill={bedColor} fontWeight={700}>{fmt(fM(currentBedTopElev),2)}{U.len}</text>
+            </g>
+          )}
+
+          {/* distributor line */}
+          {distElevM>0&&(
+            <g>
+              <line x1={px} x2={SVG_W-px} y1={toY(distElevM)+4} y2={toY(distElevM)+4}
+                stroke={C.purple} strokeWidth={2} strokeDasharray="7,3"/>
+              <text x={SVG_W-px+4} y={toY(distElevM)+8} fontSize={8} fill={C.purple} fontWeight={700}>{fmt(fM(distElevM),2)}{U.len}</text>
+              {/* dist symbol */}
+              {[0,7,14].map(dx=><rect key={dx} x={px+18+dx} y={toY(distElevM)+1} width={5} height={3} rx={1} fill={C.purple} opacity={0.8}/>)}
+              <text x={px+4} y={toY(distElevM)-3} fontSize={7} fill={C.purple}>Distributor</text>
+            </g>
+          )}
+
+          {/* warning zone shading */}
+          {distElevM>0&&clearWarnM>0&&(
+            <rect x={px+1} y={toY(distElevM)+4} width={SVG_W-px*2-2}
+              height={Math.max(0,toY(distElevM-clearWarnM)-toY(distElevM))}
+              fill={`${C.amber}15`}/>
+          )}
+
+          {/* basket */}
+          {<rect x={px+(SVG_W-px*2)*0.3} y={SVG_H-14+4} width={(SVG_W-px*2)*0.4} height={14}
+            rx={2} fill={`${C.amber}30`} stroke={C.amber} strokeWidth={1}/>}
+
+          {/* ruler on left */}
+          {[0,0.2,0.4,0.6,0.8,1].map(f=>{
+            const yy=4+SVG_H*(1-f);
+            return(
+              <g key={f}>
+                <line x1={px-5} x2={px} y1={yy} y2={yy} stroke={C.dim} strokeWidth={1}/>
+                <text x={px-7} y={yy+3} fontSize={6.5} fill={C.dim} textAnchor="end">{fmt(fM(refH*f),1)}</text>
+              </g>
+            );
+          })}
+          <text x={7} y={SVG_H/2+4} fontSize={7} fill={C.dim} textAnchor="middle" transform={`rotate(-90,7,${SVG_H/2+4})`}>{U.len}</text>
+          <text x={SVG_W/2} y={SVG_H+40} fontSize={8} fill={C.muted} textAnchor="middle">Height from bottom tangent</text>
+        </svg>
+      </div>
+
+      {/* stats */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",gap:10}}>
+
+        {/* clearance card */}
+        <div style={{background:isDanger?"#1c0a0a":isWarn?"#1c1000":"#0a1e3d",
+          border:`1px solid ${isDanger?C.red:isWarn?C.amber:C.border}`,borderRadius:10,padding:"14px 16px"}}>
+          <div style={{fontSize:9,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",
+            color:isDanger?C.red:isWarn?C.amber:C.accent,marginBottom:6}}>
+            {isDanger?"⚠ BED AT / ABOVE DISTRIBUTOR":isWarn?"⚠ APPROACHING DISTRIBUTOR":"Clearance to Distributor"}
+          </div>
+          <div style={{fontSize:30,fontWeight:800,lineHeight:1,color:isDanger?C.red:isWarn?C.amber:C.text}}>
+            {distElevM>0?fmt(fM(Math.max(0,clearDist||0)),2):"—"}
+            <span style={{fontSize:13,fontWeight:400,color:C.muted,marginLeft:6}}>{U.len}</span>
+          </div>
+          <div style={{fontSize:10,color:C.muted,marginTop:8,display:"grid",gridTemplateColumns:"1fr 1fr",gap:4}}>
+            <span>Bed top: <b style={{color:C.text}}>{fmt(fM(currentBedTopElev),2)} {U.len}</b></span>
+            {distElevM>0&&<span>Distributor: <b style={{color:C.purple}}>{fmt(fM(distElevM),2)} {U.len}</b></span>}
+            <span>Total containers: <b style={{color:C.text}}>{drumsN}</b></span>
+            {totalOutageM>0&&<span>Vessel height: <b style={{color:C.text}}>{fmt(fM(totalOutageM),2)} {U.len}</b></span>}
+          </div>
+        </div>
+
+        {/* layer-by-layer breakdown */}
+        <div style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px"}}>
+          <div style={{fontSize:9,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:C.muted,marginBottom:10}}>
+            Layer Breakdown
+          </div>
+          {layers.every(l=>nv(l.actualContainers)===0)
+            ? <div style={{fontSize:11,color:C.dim}}>Enter actual container counts in the Bed Diagram tab</div>
+            : <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                {layers.map((l,i)=>{
+                  const vol=layerVolContrib[i]||0;
+                  const h=xs>0?vol/xs:0;
+                  const actC=nv(l.actualContainers);
+                  if(actC===0) return null;
+                  const col=LC[l.type]||C.accent;
+                  return(
+                    <div key={l.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderBottom:`1px solid ${C.border}`}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <div style={{width:8,height:8,borderRadius:2,background:col,flexShrink:0}}/>
+                        <span style={{fontSize:11,color:C.text,fontWeight:500}}>{l.name}</span>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <span style={{fontSize:11,color:col,fontWeight:700}}>{actC} {container}s</span>
+                        {h>0&&<span style={{fontSize:10,color:C.muted,marginLeft:8}}>+{fmt(fM(h),2)} {U.len}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{display:"flex",justifyContent:"space-between",paddingTop:6,fontWeight:700}}>
+                  <span style={{fontSize:11,color:C.text}}>Total bed rise</span>
+                  <span style={{fontSize:13,color:C.accent}}>{fmt(fM(currentBedTopElev-bedBottomElev),2)} {U.len}</span>
+                </div>
+              </div>
+          }
+        </div>
+
+        {/* outage progress bar */}
+        {totalOutageM>0&&(
+          <div style={{background:"#0a1e3d",border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px"}}>
+            <div style={{fontSize:9,fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",color:C.accent,marginBottom:8}}>
+              Vessel Fill — Basket Top → Flange
+            </div>
+            <div style={{height:10,background:C.panel,borderRadius:999,overflow:"hidden",position:"relative",marginBottom:6}}>
+              <div style={{position:"absolute",left:0,top:0,bottom:0,width:`${Math.min(100,fillPct)}%`,borderRadius:999,
+                background:fillPct>90?`linear-gradient(90deg,${C.amber},${C.red})`:
+                  fillPct>70?`linear-gradient(90deg,${C.accent},${C.amber})`:`linear-gradient(90deg,#0ea5e9,${C.accent})`,
+                transition:"width 0.4s"}}/>
+              {distElevM>0&&totalOutageM>0&&(
+                <div style={{position:"absolute",top:0,bottom:0,width:2,background:C.purple,opacity:0.8,
+                  left:`${Math.min(100,(distElevM/totalOutageM)*100)}%`}}/>
+              )}
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10}}>
+              <span style={{color:C.muted}}>Basket top (0)</span>
+              {distElevM>0&&<span style={{color:C.purple}}>▲ Dist. ({fmt(fM(distElevM),1)} {U.len})</span>}
+              <span style={{color:C.muted}}>{fmt(fM(totalOutageM),1)} {U.len}</span>
+            </div>
+            <div style={{marginTop:8,fontSize:11,color:C.muted}}>
+              <b style={{color:remainingOutage<0?C.red:C.text}}>{remainingOutage!=null?fmt(fM(Math.max(0,remainingOutage)),2):"—"} {U.len}</b> remaining · {fillPct.toFixed(1)}% filled
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   PDF EXPORT HELPERS  (uses browser print / html)
+═══════════════════════════════════════════════════ */
+function exportDiagramPDF(layers,catalysts,icbs,units,container,xs,toRho,toKg,fRho,fM,fKg,U,getMat,layerContainerEst,fmtI,fmt){
+  const dateStr=new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+  const allMats=[...catalysts,...icbs].filter(m=>m.name.trim()&&nv(m.density)>0);
+  const rows=[...layers].reverse().map(l=>{
+    const mat=getMat(l.materialId);
+    const est=layerContainerEst(l);
+    const col=LC[l.type];
+    const tgtD=nv(l.targetDensity), actD=nv(l.actualDensity);
+    const tgtT=nv(l.targetThick),   actT=nv(l.actualThick);
+    const dVar=tgtD>0&&actD>0?((actD-tgtD)/tgtD*100).toFixed(1):null;
+    const tVar=tgtT>0&&actT>0?((actT-tgtT)/tgtT*100).toFixed(1):null;
+    const totalC=nv(l.actualContainers);
+    // Build interim check rows if any
+    const subRows=(l.subOutages||[]).filter(so=>so.drums||so.outage).map((so,si)=>{
+      const pct=totalC>0&&nv(so.drums)>0?(nv(so.drums)/totalC*100).toFixed(0):null;
+      return`<tr style="background:#fafafa">
+        <td style="padding-left:24px;color:#64748b;font-size:10px">↳ Check ${si+1}</td>
+        <td colspan="2" style="font-size:10px;color:#64748b">${so.drums?`At ${so.drums} ${container}s${pct?` (${pct}% through layer)`:""}`:"—"}</td>
+        <td colspan="4" style="font-size:10px;color:#d97706">Outage: ${so.outage?`${so.outage} ${U.sm}`:"—"}</td>
+        <td colspan="2"></td>
+      </tr>`;
+    }).join("");
+    return`<tr>
+      <td style="border-left:3px solid ${col};padding-left:8px;font-weight:600;color:${col}">${l.name}</td>
+      <td>${LL[l.type]}</td>
+      <td>${mat?mat.name:"—"}</td>
+      <td>${tgtT>0?fmt(tgtT):"-"}</td>
+      <td>${actT>0?`${fmt(actT)}${tVar?` <span style="color:${Math.abs(tVar)<5?"green":"orange"}">(${tVar>0?"+":""}${tVar}%)</span>`:""}`:"-"}</td>
+      <td>${tgtD>0?fmt(tgtD,0):"-"}</td>
+      <td>${actD>0?`${fmt(actD,0)}${dVar?` <span style="color:${Math.abs(dVar)<5?"green":"orange"}">(${dVar>0?"+":""}${dVar}%)</span>`:""}`:"-"}</td>
+      <td style="font-weight:700;color:#6d28d9">${est!=null?fmtI(est):"-"}</td>
+      <td style="font-weight:700">${nv(l.actualContainers)>0?fmtI(nv(l.actualContainers)):"-"}</td>
+      <td style="color:#d97706;font-weight:600">${l.finalOutage?`${l.finalOutage} ${U.sm}`:"-"}</td>
+    </tr>${subRows}`;
+  }).join("");
+
+  const totalEst=layers.reduce((s,l)=>{const e=layerContainerEst(l);return s+(e||0);},0);
+  const totalAct=layers.reduce((s,l)=>s+nv(l.actualContainers),0);
+  const totalTgt=layers.reduce((s,l)=>s+nv(l.targetThick),0);
+  const totalAct2=layers.reduce((s,l)=>s+nv(l.actualThick),0);
+
+  const html=`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>CatLoad — Loading Diagram</title>
+  <style>
+    body{font-family:Arial,sans-serif;font-size:12px;color:#1e293b;margin:32px;line-height:1.5}
+    h1{font-size:22px;font-weight:800;color:#0369a1;margin-bottom:2px}
+    h2{font-size:14px;font-weight:700;color:#334155;margin:20px 0 8px;border-bottom:2px solid #e2e8f0;padding-bottom:4px}
+    .meta{color:#64748b;font-size:11px;margin-bottom:20px}
+    table{width:100%;border-collapse:collapse;margin-bottom:16px}
+    th{background:#f1f5f9;padding:7px 10px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#475569;border-bottom:2px solid #cbd5e1}
+    td{padding:7px 10px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
+    tr:last-child td{font-weight:700;background:#f8fafc}
+    .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700}
+    .mat-table td{font-size:11px}
+    @media print{body{margin:16px} @page{margin:1cm}}
+  </style></head><body>
+  <h1>CatLoad — Loading Diagram</h1>
+  <div class="meta">Generated: ${dateStr} &nbsp;|&nbsp; Units: ${units.toUpperCase()} &nbsp;|&nbsp; Container type: ${container==="drum"?"55-gal Drum":"Supersack / Bag"}</div>
+
+  <h2>Material Registry</h2>
+  <table class="mat-table">
+    <tr><th>Name</th><th>Type</th><th>Bulk Density (${U.dens})</th><th>Wt/Drum (${U.mass})</th><th>Wt/Bag (${U.mass})</th></tr>
+    ${allMats.map(m=>`<tr>
+      <td style="font-weight:600">${m.name}</td>
+      <td>${m.kind==="catalyst"?"Catalyst":"ICB"}</td>
+      <td>${nv(m.density)>0?fmt(fRho(toRho(m.density))):"-"}</td>
+      <td>${nv(m.drumWt)>0?fmt(fKg(toKg(m.drumWt)),0):"-"}</td>
+      <td>${nv(m.bagWt)>0?fmt(fKg(toKg(m.bagWt)),0):"-"}</td>
+    </tr>`).join("")}
+  </table>
+
+  <h2>Bed Configuration (Top → Bottom)</h2>
+  <table>
+    <tr>
+      <th>Layer Name</th><th>Type</th><th>Material</th>
+      <th>Tgt Thick (${U.len})</th><th>Act Thick (${U.len})</th>
+      <th>Tgt ρ (${U.dens})</th><th>Act ρ (${U.dens})</th>
+      <th>Est ${container==="drum"?"Drums":"Bags"}</th>
+      <th>Act ${container==="drum"?"Drums":"Bags"}</th>
+      <th>Final Outage (${U.sm})</th>
+    </tr>
+    ${rows}
+    <tr>
+      <td colspan="3"><strong>TOTALS</strong></td>
+      <td><strong>${totalTgt>0?fmt(totalTgt):"-"}</strong></td>
+      <td><strong>${totalAct2>0?fmt(totalAct2):"-"}</strong></td>
+      <td colspan="2"></td>
+      <td style="color:#6d28d9"><strong>${totalEst>0?fmtI(totalEst):"-"}</strong></td>
+      <td><strong>${totalAct>0?fmtI(totalAct):"-"}</strong></td>
+      <td></td>
+    </tr>
+  </table>
+
+  <div style="margin-top:32px;font-size:10px;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:8px">
+    CatLoad Catalyst Loading Calculator &nbsp;|&nbsp; For field use only — verify all values against P&IDs and vendor datasheets
+  </div>
+  </body></html>`;
+
+  const blob=new Blob([html],{type:"text/html"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download="CatLoad_Loading_Diagram.html"; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function exportReportPDF({customer,country,plant,vessel,date,preparedBy,loadMethod,catalysts,icbs,layers,units,container,shellID,shellH,topHead,botHead,hasBasket,basketOD,basketH,grossV,usableV,getMat,layerContainerEst,toRho,toKg,fRho,fM,fKg,fV,U,fmt,fmtI}){
+  const allMats=[...catalysts,...icbs].filter(m=>m.name.trim()&&nv(m.density)>0);
+  const totalEst=layers.reduce((s,l)=>{const e=layerContainerEst(l);return s+(e||0);},0);
+  const totalTgt=layers.reduce((s,l)=>s+nv(l.targetThick),0);
+  const totalAct=layers.reduce((s,l)=>s+nv(l.actualContainers),0);
+  const methodLabel=loadMethod==="freefill"?"Free Fall":loadMethod==="sock"?"Sock Loading":"Dense Phase Loading";
+  const dateStr=date||new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+
+  const layerRows=[...layers].reverse().map(l=>{
+    const mat=getMat(l.materialId);
+    const est=layerContainerEst(l);
+    return`<tr>
+      <td>${l.name}</td><td>${mat?mat.name:"—"}</td>
+      <td>${nv(l.targetThick)>0?fmt(nv(l.targetThick)):"-"}</td>
+      <td>${nv(l.actualThick)>0?fmt(nv(l.actualThick)):"-"}</td>
+      <td>${nv(l.targetDensity)>0?fmt(nv(l.targetDensity),0):"-"}</td>
+      <td>${nv(l.actualDensity)>0?fmt(nv(l.actualDensity),0):"-"}</td>
+      <td>${est!=null?fmtI(est):"-"}</td>
+      <td>${nv(l.actualContainers)>0?fmtI(nv(l.actualContainers)):"-"}</td>
+    </tr>`;
+  }).join("");
+
+  const html=`<!DOCTYPE html><html><head><meta charset="utf-8">
+  <title>Catalyst Loading Report — ${customer||"[Customer]"}</title>
+  <style>
+    body{font-family:Arial,sans-serif;font-size:12px;color:#1e293b;margin:40px;line-height:1.6}
+    .header{border-bottom:3px solid #0369a1;padding-bottom:16px;margin-bottom:24px}
+    .logo{font-size:20px;font-weight:900;color:#0369a1;letter-spacing:2px}
+    .title{font-size:16px;font-weight:700;color:#1e293b;margin-top:4px}
+    .sub{font-size:11px;color:#64748b}
+    .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 32px;margin-bottom:24px}
+    .info-row{display:flex;gap:8px;font-size:12px;padding:3px 0;border-bottom:1px solid #f1f5f9}
+    .info-label{color:#64748b;min-width:130px}
+    .info-val{font-weight:600;color:#1e293b}
+    h2{font-size:13px;font-weight:700;color:#0369a1;margin:20px 0 8px;text-transform:uppercase;letter-spacing:.08em}
+    table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11px}
+    th{background:#e0f2fe;padding:6px 10px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#0369a1;border-bottom:2px solid #7dd3fc}
+    td{padding:6px 10px;border-bottom:1px solid #f1f5f9}
+    .total-row td{font-weight:700;background:#f0f9ff;border-top:2px solid #7dd3fc}
+    .section{background:#f8fafc;border-left:3px solid #38bdf8;padding:12px 16px;margin-bottom:16px;border-radius:0 6px 6px 0}
+    .footer{margin-top:48px;padding-top:12px;border-top:1px solid #e2e8f0;font-size:10px;color:#94a3b8;display:flex;justify-content:space-between}
+    .sig-block{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:32px}
+    .sig-line{border-top:1px solid #334155;padding-top:4px;font-size:10px;color:#64748b;margin-top:32px}
+    @media print{body{margin:16px} @page{margin:1cm}}
+  </style></head><body>
+
+  <div class="header">
+    <div class="logo">CATLOAD</div>
+    <div class="title">Catalyst Loading Report</div>
+    <div class="sub">Confidential — For field and engineering use only</div>
+  </div>
+
+  <h2>Project Information</h2>
+  <div class="info-grid">
+    <div>
+      <div class="info-row"><span class="info-label">Customer:</span><span class="info-val">${customer||"[Customer Name]"}</span></div>
+      <div class="info-row"><span class="info-label">Country:</span><span class="info-val">${country||"[Country]"}</span></div>
+      <div class="info-row"><span class="info-label">Plant / Facility:</span><span class="info-val">${plant||"[Plant]"}</span></div>
+      <div class="info-row"><span class="info-label">Vessel Tag:</span><span class="info-val">${vessel||"[Vessel ID]"}</span></div>
+    </div>
+    <div>
+      <div class="info-row"><span class="info-label">Loading Date:</span><span class="info-val">${dateStr}</span></div>
+      <div class="info-row"><span class="info-label">Prepared By:</span><span class="info-val">${preparedBy||"[Engineer Name]"}</span></div>
+      <div class="info-row"><span class="info-label">Loading Method:</span><span class="info-val">${methodLabel}</span></div>
+      <div class="info-row"><span class="info-label">Container Type:</span><span class="info-val">${container==="drum"?"55-gal Drum":"Supersack / Bag"}</span></div>
+    </div>
+  </div>
+
+  <h2>Vessel Geometry</h2>
+  <div class="section">
+    <div class="info-grid">
+      <div>
+        <div class="info-row"><span class="info-label">Internal Diameter:</span><span class="info-val">${shellID?`${shellID} ${U.len}`:"—"}</span></div>
+        <div class="info-row"><span class="info-label">T-T Shell Height:</span><span class="info-val">${shellH?`${shellH} ${U.len}`:"—"}</span></div>
+        <div class="info-row"><span class="info-label">Top Head:</span><span class="info-val">${{ellipsoidal:"2:1 Ellipsoidal (SE)",hemispherical:"Hemispherical",fd:"ASME F&D",flat:"Flat"}[topHead]||topHead}</span></div>
+        <div class="info-row"><span class="info-label">Bottom Head:</span><span class="info-val">${{ellipsoidal:"2:1 Ellipsoidal (SE)",hemispherical:"Hemispherical",fd:"ASME F&D",flat:"Flat"}[botHead]||botHead}</span></div>
+      </div>
+      <div>
+        <div class="info-row"><span class="info-label">Outlet Basket:</span><span class="info-val">${hasBasket?"Present":"None"}</span></div>
+        ${hasBasket?`
+        <div class="info-row"><span class="info-label">Basket OD:</span><span class="info-val">${basketOD?`${basketOD} ${U.len}`:"—"}</span></div>
+        <div class="info-row"><span class="info-label">Basket Height:</span><span class="info-val">${basketH?`${basketH} ${U.len}`:"—"}</span></div>`:""}
+        <div class="info-row"><span class="info-label">Gross Volume:</span><span class="info-val">${grossV>0?`${fmt(fV(grossV))} ${U.vol}`:"—"}</span></div>
+        <div class="info-row"><span class="info-label">Usable Volume:</span><span class="info-val">${usableV>0?`${fmt(fV(usableV))} ${U.vol}`:"—"}</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Materials</h2>
+  <table>
+    <tr><th>Name</th><th>Type</th><th>Bulk Density (${U.dens})</th><th>Wt/Drum (${U.mass})</th><th>Wt/Bag (${U.mass})</th></tr>
+    ${allMats.map(m=>`<tr>
+      <td style="font-weight:600">${m.name}</td>
+      <td>${m.kind==="catalyst"?"Catalyst":"ICB"}</td>
+      <td>${nv(m.density)>0?fmt(fRho(toRho(m.density))):"-"}</td>
+      <td>${nv(m.drumWt)>0?fmt(fKg(toKg(m.drumWt)),0):"-"}</td>
+      <td>${nv(m.bagWt)>0?fmt(fKg(toKg(m.bagWt)),0):"-"}</td>
+    </tr>`).join("")}
+  </table>
+
+  <h2>Loading Diagram — Bed Configuration</h2>
+  <table>
+    <tr>
+      <th>Layer (top→bottom)</th><th>Material</th>
+      <th>Target H (${U.len})</th><th>Actual H (${U.len})</th>
+      <th>Target ρ (${U.dens})</th><th>Actual ρ (${U.dens})</th>
+      <th>Est. ${container==="drum"?"Drums":"Bags"}</th>
+      <th>Actual ${container==="drum"?"Drums":"Bags"}</th>
+    </tr>
+    ${layerRows}
+    <tr class="total-row">
+      <td colspan="2">TOTAL</td>
+      <td>${totalTgt>0?fmt(totalTgt):"-"}</td>
+      <td>${layers.reduce((s,l)=>s+nv(l.actualThick),0)>0?fmt(layers.reduce((s,l)=>s+nv(l.actualThick),0)):"-"}</td>
+      <td colspan="2"></td>
+      <td>${totalEst>0?fmtI(totalEst):"-"}</td>
+      <td>${totalAct>0?fmtI(totalAct):"-"}</td>
+    </tr>
+  </table>
+
+  <h2>Executive Summary</h2>
+  <div class="section" style="font-size:12px;line-height:1.8">
+    This report documents the catalyst loading performed at <strong>${plant||"[Plant]"}</strong>, 
+    operated by <strong>${customer||"[Customer]"}</strong> in <strong>${country||"[Country]"}</strong>.
+    The fixed-bed reactor <strong>${vessel||"[Vessel ID]"}</strong> was loaded using the 
+    <strong>${methodLabel}</strong> technique on <strong>${dateStr}</strong>.
+    The vessel contains a total of <strong>${layers.length}</strong> material layers with a combined 
+    target bed height of <strong>${totalTgt>0?fmt(totalTgt)+" "+U.len:"[pending]"}</strong>.
+    An estimated <strong>${totalEst>0?fmtI(totalEst):"[pending]"} ${container==="drum"?"drums":"bags"}</strong> of 
+    catalyst and inert material are required to fill the vessel to the specified configuration.
+    ${totalAct>0?`A total of <strong>${fmtI(totalAct)} ${container==="drum"?"drums":"bags"}</strong> were actually loaded.`:""}
+    All loading quantities and bed configurations should be verified against the applicable 
+    process data sheets and vendor loading guidelines prior to commissioning.
+  </div>
+
+  <div class="sig-block">
+    <div>
+      <div class="sig-line">Loading Engineer / Supervisor</div>
+      <div class="sig-line" style="margin-top:8px">Date</div>
+    </div>
+    <div>
+      <div class="sig-line">Client Representative</div>
+      <div class="sig-line" style="margin-top:8px">Date</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>CatLoad — Catalyst Loading Calculator</span>
+    <span>CONFIDENTIAL — For engineering and field use only</span>
+    <span>${dateStr}</span>
+  </div>
+  </body></html>`;
+
+  const blob=new Blob([html],{type:"text/html"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download="CatLoad_Loading_Report.html"; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+/* ═══════════════════════════════════════════════════
+   MAIN APP
+═══════════════════════════════════════════════════ */
+function App(){
+  const [tab,setTab]=useState("calc");
+  const [units,setUnits]=useState("si");
+
+  /* vessel */
+  const [shellID,setShellID]=useState("");
+  const [shellH,setShellH]=useState("");
+  const [topHead,setTopHead]=useState("ellipsoidal");
+  const [botHead,setBotHead]=useState("ellipsoidal");
+
+  /* basket */
+  const [hasBasket,setHasBasket]=useState(false);
+  const [basketOD,setBasketOD]=useState("");
+  const [basketH,setBasketH]=useState("");
+
+  /* global */
+  const [container,setContainer]=useState("drum");
+  const [loadMethod,setLoadMethod]=useState("sock");
+
+  /* materials */
+  const [catalysts,setCatalysts]=useState([makeCat(1),makeCat(2),makeCat(3),makeCat(4),makeCat(5),makeCat(6)]);
+  const [icbs,setIcbs]=useState([makeIcb(1),makeIcb(2),makeIcb(3)]);
+  const updMat=(kind,id,field,val)=>{
+    if(kind==="catalyst") setCatalysts(ms=>ms.map(m=>m.id===id?{...m,[field]:val}:m));
+    else setIcbs(ms=>ms.map(m=>m.id===id?{...m,[field]:val}:m));
+  };
+  const allMaterials=useMemo(()=>[...catalysts,...icbs],[catalysts,icbs]);
+  const getMat=id=>allMaterials.find(m=>m.id===id)||null;
+
+  /* calc tab material */
+  const [calcMatId,setCalcMatId]=useState("");
+  const [voidFrac,setVoidFrac]=useState("0.40");
+
+  /* distributor */
+  const [distElev,setDistElev]=useState("");
+  const [clearWarn,setClearWarn]=useState("");
+  const [flangeToBskt,setFlangeToBskt]=useState("");
+
+  /* back-calc */
+  const [bcMass,setBcMass]=useState("");
+  const [bcOutage,setBcOutage]=useState("");
+  const [bcBotElev,setBcBotElev]=useState("");
+
+  /* checklist */
+  const [checked,setChecked]=useState({});
+
+  /* diagram layers */
+  const [layers,setLayers]=useState([
+    {...newLayer("support"),name:"Support Grading (bottom)"},
+    {...newLayer("icb"),name:"ICB Layer 1"},
+    {...newLayer("catalyst"),name:"Catalyst Bed 1"},
+    {...newLayer("icb"),name:"ICB Layer 2"},
+    {...newLayer("inert"),name:"Top Inert Layer"},
+  ]);
+  const [dragIdx,setDragIdx]=useState(null);
+  const [dragOver,setDragOver]=useState(null);
+
+  /* report */
+  const [rpCustomer,setRpCustomer]=useState("");
+  const [rpCountry,setRpCountry]=useState("");
+  const [rpPlant,setRpPlant]=useState("");
+  const [rpVessel,setRpVessel]=useState("");
+  const [rpDate,setRpDate]=useState("");
+  const [rpPreparedBy,setRpPreparedBy]=useState("");
+
+  /* dense loading tracker */
+  // dSessions: array of { id, name, materialId, targetDensity, checkEvery, checks:[] }
+  // checks: { id, containersLoaded (count at this stop), layerThick (measured), rpm }
+  const newDSession=()=>({id:_dsid++,name:"Catalyst Bed 1",materialId:"",targetDensity:"",checkEvery:"10",checks:[]});
+  const newCheck=()=>({id:_dchkid++,containersLoaded:"",layerThick:"",rpm:""});
+  const [dSessions,setDSessions]=useState([newDSession()]);
+  const [activeSession,setActiveSession]=useState(0);
+  const updDSession=(idx,field,val)=>setDSessions(s=>s.map((x,i)=>i===idx?{...x,[field]:val}:x));
+  const addDCheck=idx=>setDSessions(s=>s.map((x,i)=>i===idx?{...x,checks:[...x.checks,newCheck()]}:x));
+  const updDCheck=(sIdx,cId,field,val)=>setDSessions(s=>s.map((x,i)=>i===sIdx?{...x,checks:x.checks.map(c=>c.id===cId?{...c,[field]:val}:c)}:x));
+  const removeDCheck=(sIdx,cId)=>setDSessions(s=>s.map((x,i)=>i===sIdx?{...x,checks:x.checks.filter(c=>c.id!==cId)}:x));
+
+  /* units */
+  const U=useMemo(()=>({
+    len:units==="si"?"m":"ft", vol:units==="si"?"m³":"ft³",
+    mass:units==="si"?"kg":"lb", dens:units==="si"?"kg/m³":"lb/ft³",
+    sm:units==="si"?"cm":"in", area:units==="si"?"m²":"ft²",
+  }),[units]);
+  const toM  =v=>units==="si"?nv(v):nv(v)/3.28084;
+  const toKg =v=>units==="si"?nv(v):nv(v)/LB_PER_KG;
+  const toRho=v=>units==="si"?nv(v):nv(v)*16.0185;
+  const fM   =v=>units==="si"?v:v*3.28084;
+  const fV   =v=>units==="si"?v:v*FT3_PER_M3;
+  const fKg  =v=>units==="si"?v:v*LB_PER_KG;
+  const fRho =v=>units==="si"?v:v/16.0185;
+  const fSm  =v=>units==="si"?v*100:v*IN_PER_M;
+
+  /* geometry */
+  const D=toM(shellID); const Hs=toM(shellH);
+  const xs=D>0?XS(D):0;
+  const topHV=headVol(topHead,D), botHV=headVol(botHead,D);
+  const shellV=D>0&&Hs>0?cylV(D,Hs):0;
+  const grossV=topHV+shellV+botHV;
+  const bD=toM(basketOD), bH_m=toM(basketH);
+  const basketExcl=hasBasket&&bD>0&&bH_m>0?cylV(bD,bH_m):0;
+  const usableV=Math.max(0,grossV-basketExcl);
+
+  /* calc material */
+  const calcMat=getMat(calcMatId);
+  const rho=calcMat?toRho(calcMat.density):0;
+  const contWtKg=calcMat?toKg(container==="drum"?calcMat.drumWt:calcMat.bagWt):0;
+  const catMass=usableV>0&&rho>0?usableV*rho:null;
+  const contVolM3=contWtKg>0&&rho>0?contWtKg/rho:null;
+  const nCont=catMass&&contWtKg>0?catMass/contWtKg:null;
+  const risePerCont=contVolM3&&xs>0?contVolM3/xs:null;
+
+  /* tracker — multi-layer, per-material volume sum */
+  const distElevM=toM(distElev);
+  const clearWarnM=nv(clearWarn)>0?toM(clearWarn):0.3;
+  const totalOutageM=toM(flangeToBskt);
+  // Each layer contributes volume = (actualContainers × kg/container) / bulk_density
+  // This correctly handles different materials per layer
+  // Per-layer volume contribution array (same index as layers[])
+  const layerVolContrib=layers.map(layer=>{
+    const mat=getMat(layer.materialId);
+    const actC=nv(layer.actualContainers);
+    if(!mat||actC<=0) return 0;
+    const rhoMat=toRho(mat.density);
+    const wt=toKg(container==="drum"?mat.drumWt:mat.bagWt);
+    if(rhoMat<=0||wt<=0) return 0;
+    return (actC*wt)/rhoMat;
+  });
+  const totalLoadedVolM3=layerVolContrib.reduce((s,v)=>s+v,0);
+  const botHeadEquivH=D>0&&xs>0?botHV/xs:0;
+  const bedBottomElev=hasBasket&&bH_m>0?bH_m:botHeadEquivH;
+  const currentBedTopElev=bedBottomElev+(xs>0?totalLoadedVolM3/xs:0);
+  const clearDist=distElevM>0?distElevM-currentBedTopElev:null;
+  const isWarn=clearDist!=null&&clearDist<clearWarnM&&clearDist>=0;
+  const isDanger=clearDist!=null&&clearDist<0;
+  const remainingOutage=totalOutageM>0&&xs>0?totalOutageM-totalLoadedVolM3/xs:null;
+  const fillPct=totalOutageM>0&&xs>0?Math.min(100,(totalLoadedVolM3/xs/totalOutageM)*100):0;
+  const drumsN=layers.reduce((s,l)=>s+nv(l.actualContainers),0);
+
+  /* back-calc */
+  const bcMassKg=toKg(bcMass);
+  const bcOutageM=units==="si"?nv(bcOutage)/100:nv(bcOutage)/IN_PER_M;
+  const bcBotElevM=toM(bcBotElev);
+  const layerTopFB=Hs>0?Hs-bcOutageM:null;
+  const layerH=layerTopFB!=null?layerTopFB-bcBotElevM:null;
+  const layerVol=layerH!=null&&layerH>0&&xs>0?xs*layerH:null;
+  const backRho=layerVol&&bcMassKg>0?bcMassKg/layerVol:null;
+
+  /* checklist */
+  const clDone=Object.values(checked).filter(Boolean).length;
+  const clPct=Math.round(clDone/CL_ITEMS.length*100);
+
+  /* diagram */
+  const addLayer=type=>setLayers(l=>[...l,newLayer(type)]);
+  const removeLayer=id=>setLayers(l=>l.filter(x=>x.id!==id));
+  const updLayer=(id,field,val)=>setLayers(l=>l.map(x=>x.id===id?{...x,[field]:val}:x));
+  const moveLayer=(from,to)=>setLayers(l=>{const a=[...l];const[item]=a.splice(from,1);a.splice(to,0,item);return a;});
+  const addSubOutage=id=>setLayers(l=>l.map(x=>x.id===id?{...x,subOutages:[...(x.subOutages||[]),{id:_soId++,drums:"",outage:""}]}:x));
+  const updSubOutage=(layerId,soId,field,val)=>setLayers(l=>l.map(x=>x.id===layerId?{...x,subOutages:(x.subOutages||[]).map(s=>s.id===soId?{...s,[field]:val}:s)}:x));
+  const removeSubOutage=(layerId,soId)=>setLayers(l=>l.map(x=>x.id===layerId?{...x,subOutages:(x.subOutages||[]).filter(s=>s.id!==soId)}:x));
+
+  const layerContainerEst=layer=>{
+    if(!xs) return null;
+    const mat=getMat(layer.materialId); if(!mat) return null;
+    const rhoMat=toRho(mat.density);
+    const wt=toKg(container==="drum"?mat.drumWt:mat.bagWt);
+    const th=nv(layer.targetThick);
+    if(rhoMat<=0||wt<=0||th<=0) return null;
+    return Math.ceil(xs*toM(String(th))*rhoMat/wt);
+  };
+
+  const totalTarget=layers.reduce((s,l)=>s+nv(l.targetThick),0);
+  const totalActual=layers.reduce((s,l)=>s+nv(l.actualThick),0);
+  const totalEstContainers=layers.reduce((s,l)=>{const e=layerContainerEst(l);return s+(e||0);},0);
+  const totalActContainers=layers.reduce((s,l)=>s+nv(l.actualContainers),0);
+
+  const activeCats=catalysts.filter(m=>m.name.trim());
+  const activeIcbs=icbs.filter(m=>m.name.trim());
+
+  const TABS=[["materials","Materials"],["calc","Calculator"],["diagram","Loading Diagram"],["dense","Dense Loading"],["report","Report"],["check",`Checklist${clDone>0?` ${clDone}/${CL_ITEMS.length}`:""}`]];
+
+  /* ── render ── */
+  return(
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Sora','Segoe UI',sans-serif",display:"flex",flexDirection:"column"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap');
+        *{box-sizing:border-box;margin:0;padding:0;}
+        select option{background:#0d1829;}
+        ::-webkit-scrollbar{width:5px;}::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:10px;}
+        input::placeholder{color:#253d5b;}
+        input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none;}
+        .hrow:hover{background:#0d1829 !important;}
+        .lcard:hover .dh{opacity:1 !important;}
+      `}</style>
+
+      {/* top bar */}
+      <div style={{background:"#040c1a",borderBottom:`1px solid ${C.border}`,padding:"0 16px",flexShrink:0}}>
+        <div style={{maxWidth:1200,margin:"0 auto",display:"flex",alignItems:"center",gap:12,height:52}}>
+          <div style={{width:32,height:32,borderRadius:8,background:"linear-gradient(135deg,#38bdf8,#0369a1)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="3" y="2" width="10" height="12" rx="2" stroke="white" strokeWidth="1.5"/><path d="M8 2v12M3 8h10" stroke="white" strokeWidth="1.2" strokeOpacity=".4"/></svg>
+          </div>
+          <div>
+            <div style={{fontSize:14,fontWeight:800,color:"#f1f5f9",letterSpacing:"0.04em"}}>CatLoad</div>
+            <div style={{fontSize:9,color:"#253d5b",letterSpacing:"0.1em",textTransform:"uppercase"}}>Catalyst Loading Calculator</div>
+          </div>
+          <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+            <Toggle options={[{id:"si",label:"SI"},{id:"us",label:"US"}]} value={units} onChange={setUnits} small/>
+            <Toggle options={[{id:"drum",label:"Drums"},{id:"bag",label:"Bags"}]} value={container} onChange={setContainer} small/>
+            <div style={{display:"flex",background:C.panel,borderRadius:8,padding:3,gap:2}}>
+              {TABS.map(([id,label])=>(
+                <button key={id} onClick={()=>setTab(id)} style={{background:tab===id?"#1e3a5f":"transparent",border:"none",borderRadius:6,color:tab===id?"#f1f5f9":C.muted,cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"inherit",padding:"6px 12px",transition:"all 0.15s"}}>{label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",padding:"20px 16px 52px"}}>
+        <div style={{maxWidth:1200,margin:"0 auto"}}>
+
+          {/* ══ MATERIALS ══ */}
+          {tab==="materials"&&(
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+              <Card>
+                <STitle color={C.purple}>Catalyst Materials (up to 6)</STitle>
+                <div style={{fontSize:11,color:C.muted,marginBottom:14,lineHeight:1.5}}>Name, bulk density, and net weight per drum/bag for each catalyst.</div>
+                <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr 1fr 1fr",gap:8,padding:"4px 0 8px",borderBottom:`1px solid ${C.border}`}}>
+                  {["Material Name",`Bulk Density (${U.dens})`,`Wt/Drum (${U.mass})`,`Wt/Bag (${U.mass})`].map(h=>(
+                    <div key={h} style={{fontSize:9,fontWeight:700,color:C.dim,letterSpacing:"0.08em",textTransform:"uppercase"}}>{h}</div>
+                  ))}
+                </div>
+                {catalysts.map(mat=><MatRow key={mat.id} mat={mat} accent={C.purple} updMat={updMat} U={U} units={units}/>)}
+              </Card>
+              <Card>
+                <STitle color={C.accent}>ICB / Inert Ball Materials (up to 3)</STitle>
+                <div style={{fontSize:11,color:C.muted,marginBottom:14,lineHeight:1.5}}>Different sizes (½", 1", 1½") typically have different densities and container weights.</div>
+                <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr 1fr 1fr",gap:8,padding:"4px 0 8px",borderBottom:`1px solid ${C.border}`}}>
+                  {["Material Name",`Bulk Density (${U.dens})`,`Wt/Drum (${U.mass})`,`Wt/Bag (${U.mass})`].map(h=>(
+                    <div key={h} style={{fontSize:9,fontWeight:700,color:C.dim,letterSpacing:"0.08em",textTransform:"uppercase"}}>{h}</div>
+                  ))}
+                </div>
+                {icbs.map(mat=><MatRow key={mat.id} mat={mat} accent={C.accent} updMat={updMat} U={U} units={units}/>)}
+                <Divider/>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:C.muted,marginBottom:10}}>Defined Materials Summary</div>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {allMaterials.filter(m=>m.name.trim()&&(nv(m.density)>0||nv(m.drumWt)>0)).map(mat=>{
+                    const col=mat.kind==="catalyst"?C.purple:C.accent;
+                    const rhoSI=toRho(mat.density);
+                    const drumKg=toKg(mat.drumWt), bagKg=toKg(mat.bagWt);
+                    return(
+                      <div key={mat.id} style={{background:C.panel,borderRadius:8,padding:"8px 12px",borderLeft:`3px solid ${col}`,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                        <div>
+                          <div style={{fontSize:12,fontWeight:700,color:col}}>{mat.name}</div>
+                          <div style={{fontSize:10,color:C.muted,marginTop:2}}>{mat.kind==="catalyst"?"Catalyst":"ICB"} · ρ = {rhoSI>0?`${fmt(fRho(rhoSI))} ${U.dens}`:"—"}</div>
+                        </div>
+                        <div style={{display:"flex",gap:16}}>
+                          <div style={{textAlign:"center"}}>
+                            <div style={{fontSize:11,fontWeight:700,color:C.text}}>{drumKg>0?`${fmt(fKg(drumKg),0)} ${U.mass}`:"—"}</div>
+                            <div style={{fontSize:9,color:C.dim}}>per drum</div>
+                          </div>
+                          <div style={{textAlign:"center"}}>
+                            <div style={{fontSize:11,fontWeight:700,color:C.text}}>{bagKg>0?`${fmt(fKg(bagKg),0)} ${U.mass}`:"—"}</div>
+                            <div style={{fontSize:9,color:C.dim}}>per bag</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {allMaterials.every(m=>!m.name.trim())&&<div style={{fontSize:11,color:C.dim,padding:"8px 0"}}>No materials defined yet</div>}
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {/* ══ CALCULATOR ══ */}
+          {tab==="calc"&&(
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                {/* vessel */}
+                <Card>
+                  <STitle>① Vessel Shell</STitle>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                    <div><Label>Internal Diameter ({U.len})</Label><TInp value={shellID} onChange={setShellID} placeholder={units==="si"?"e.g. 2.438":"e.g. 8.0"}/><Hint>Internal (corroded) ID from drawings</Hint></div>
+                    <div><Label>T-to-T Height ({U.len})</Label><TInp value={shellH} onChange={setShellH} placeholder={units==="si"?"e.g. 6.0":"e.g. 19.7"}/><Hint>Shell only — not including heads</Hint></div>
+                    <div><Label>Top Head Type</Label>
+                      <Sel value={topHead} onChange={setTopHead}>
+                        <option value="ellipsoidal">2:1 Ellipsoidal (SE)</option>
+                        <option value="hemispherical">Hemispherical</option>
+                        <option value="fd">ASME F&D</option>
+                        <option value="flat">Flat (no volume)</option>
+                      </Sel>
+                      {topHead!=="flat"&&D>0&&<Hint>Vol: {fmt(fV(headVol(topHead,D)))} {U.vol}</Hint>}
+                    </div>
+                    <div><Label>Bottom Head Type</Label>
+                      <Sel value={botHead} onChange={setBotHead}>
+                        <option value="ellipsoidal">2:1 Ellipsoidal (SE)</option>
+                        <option value="hemispherical">Hemispherical</option>
+                        <option value="fd">ASME F&D</option>
+                        <option value="flat">Flat (no volume)</option>
+                      </Sel>
+                      {botHead!=="flat"&&D>0&&<Hint>Vol: {fmt(fV(headVol(botHead,D)))} {U.vol}</Hint>}
+                    </div>
+                  </div>
+                </Card>
+                {/* basket */}
+                <Card>
+                  <STitle color={C.amber}>② Outlet Basket</STitle>
+                  <Toggle options={[{id:"false",label:"No Basket"},{id:"true",label:"Basket Present"}]} value={String(hasBasket)} onChange={v=>setHasBasket(v==="true")}/>
+                  {hasBasket&&(
+                    <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${C.border}`,display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                      <div><Label>Basket OD ({U.len})</Label><TInp value={basketOD} onChange={setBasketOD} placeholder={units==="si"?"0.30":"1.0"}/><Hint>Outer diameter of basket cylinder</Hint></div>
+                      <div><Label>Basket Height ({U.len})</Label><TInp value={basketH} onChange={setBasketH} placeholder={units==="si"?"0.60":"2.0"}/><Hint>From bottom tangent upward</Hint></div>
+                      {bD>0&&bH_m>0&&(
+                        <div style={{gridColumn:"1/-1",background:"#0a1e10",border:"1px solid #166534",borderRadius:8,padding:"10px 14px"}}>
+                          <div style={{fontSize:10,color:C.amber,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:4}}>Excluded Volume</div>
+                          <div style={{fontSize:20,fontWeight:800,color:"#fbbf24"}}>{fmt(fV(basketExcl))} <span style={{fontSize:11,fontWeight:400,color:C.muted}}>{U.vol}</span></div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </Card>
+                {/* material */}
+                <Card>
+                  <STitle color={C.purple}>③ Material &amp; Loading</STitle>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                    <div style={{gridColumn:"1/-1"}}>
+                      <Label>Select Material</Label>
+                      <Sel value={calcMatId} onChange={setCalcMatId}>
+                        <option value="">— Choose a material —</option>
+                        {activeCats.length>0&&<optgroup label="Catalysts">{activeCats.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>}
+                        {activeIcbs.length>0&&<optgroup label="ICBs">{activeIcbs.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>}
+                        {activeCats.length===0&&activeIcbs.length===0&&<option disabled>Define materials in Materials tab first</option>}
+                      </Sel>
+                      <Hint>Define materials in the Materials tab first</Hint>
+                    </div>
+                    {calcMat&&(<>
+                      <div style={{background:C.panel,borderRadius:8,padding:"8px 12px"}}>
+                        <Label>Bulk Density</Label>
+                        <div style={{fontSize:16,fontWeight:700,color:C.text}}>{nv(calcMat.density)>0?`${fmt(fRho(toRho(calcMat.density)))} ${U.dens}`:"—"}</div>
+                      </div>
+                      <div style={{background:C.panel,borderRadius:8,padding:"8px 12px"}}>
+                        <Label>{container==="drum"?"Weight / Drum":"Weight / Bag"}</Label>
+                        <div style={{fontSize:16,fontWeight:700,color:C.accent}}>{(()=>{const w=toKg(container==="drum"?calcMat.drumWt:calcMat.bagWt);return w>0?`${fmt(fKg(w),0)} ${U.mass}`:"—";})()}</div>
+                      </div>
+                      {contVolM3&&risePerCont&&(
+                        <div style={{gridColumn:"1/-1",background:"#0a1e3d",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",display:"flex",gap:24}}>
+                          <div><div style={{fontSize:9,color:C.dim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:2}}>Vol / {container}</div><div style={{fontSize:14,fontWeight:700,color:C.text}}>{fmt(fV(contVolM3))} <span style={{fontSize:10,color:C.muted}}>{U.vol}</span></div></div>
+                          <div><div style={{fontSize:9,color:C.dim,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:2}}>Bed rise / {container}</div><div style={{fontSize:14,fontWeight:700,color:C.accent}}>{fmt(fSm(risePerCont))} <span style={{fontSize:10,color:C.muted}}>{U.sm}</span></div></div>
+                        </div>
+                      )}
+                    </>)}
+                    <div style={{gridColumn:"1/-1"}}>
+                      <Label>Loading Method</Label>
+                      <Sel value={loadMethod} onChange={setLoadMethod}>
+                        <option value="freefill">Free Fall</option>
+                        <option value="sock">Sock Loading</option>
+                        <option value="dense">Dense Phase Loading</option>
+                      </Sel>
+                    </div>
+                    <div style={{gridColumn:"1/-1"}}>
+                      <Label>Void Fraction (ε) — {parseFloat(voidFrac).toFixed(2)}</Label>
+                      <input type="range" min="0.25" max="0.60" step="0.01" value={voidFrac} onChange={e=>setVoidFrac(e.target.value)} style={{width:"100%",accentColor:C.accent,marginTop:4}}/>
+                      <Hint>Typical packed beds: 0.35 – 0.45</Hint>
+                    </div>
+                  </div>
+                </Card>
+                {/* back calc */}
+                <Card style={{border:"1px solid #1a3d2a"}}>
+                  <STitle color={C.green}>⑤ Field Density Calculator</STitle>
+                  <div style={{fontSize:11,color:C.muted,marginBottom:12,lineHeight:1.5}}>Back-calculate actual bulk density from mass loaded and measured outage.</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                    <div><Label>Mass Loaded ({U.mass})</Label><TInp value={bcMass} onChange={setBcMass} placeholder={units==="si"?"5000":"11000"}/></div>
+                    <div><Label>Current Outage ({U.sm})</Label><TInp value={bcOutage} onChange={setBcOutage} placeholder={units==="si"?"45":"18"}/><Hint>Top tangent → catalyst surface</Hint></div>
+                    <div style={{gridColumn:"1/-1"}}><Label>Bottom of Layer Elevation ({U.len})</Label><TInp value={bcBotElev} onChange={setBcBotElev} placeholder="0 = starts at bottom head"/><Hint>From bottom tangent upward</Hint></div>
+                  </div>
+                  {backRho!=null&&backRho>0?(
+                    <div style={{marginTop:14,background:"#0a2d1e",border:"1px solid #166534",borderRadius:9,padding:"12px 14px"}}>
+                      <div style={{fontSize:10,color:C.green,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:6}}>Back-Calculated Density</div>
+                      <div style={{fontSize:26,fontWeight:800,color:"#6ee7b7"}}>{fmt(fRho(backRho))} <span style={{fontSize:12,fontWeight:400,color:C.green}}>{U.dens}</span></div>
+                      {rho>0&&<div style={{fontSize:11,color:C.muted,marginTop:6}}>vs. {calcMat?.name} {fmt(fRho(rho))} {U.dens} — <span style={{color:Math.abs(backRho-rho)/rho<0.05?C.green:C.amber}}>{(((backRho-rho)/rho)*100).toFixed(1)}% variance</span></div>}
+                    </div>
+                  ):<div style={{marginTop:12,fontSize:11,color:C.dim}}>Enter all fields above plus vessel shell dimensions</div>}
+                </Card>
+              </div>
+
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                {/* volume summary */}
+                <Card style={{border:"1px solid #1e4976"}}>
+                  <STitle>Volume Summary</STitle>
+                  <RRow label="Shell volume" value={fmt(fV(shellV))} unit={U.vol}/>
+                  <RRow label="Top head volume" value={fmt(fV(topHV))} unit={U.vol}/>
+                  <RRow label="Bottom head volume" value={fmt(fV(botHV))} unit={U.vol}/>
+                  {hasBasket&&basketExcl>0&&<RRow label="Outlet basket excluded" value={`− ${fmt(fV(basketExcl))}`} unit={U.vol}/>}
+                  <Divider/>
+                  <RRow label="Gross vessel volume" value={fmt(fV(grossV))} unit={U.vol}/>
+                  <RRow label="Usable catalyst volume" value={fmt(fV(usableV))} unit={U.vol} hi/>
+                </Card>
+                {/* loading estimate */}
+                <Card>
+                  <STitle>Loading Estimate</STitle>
+                  {rho>0&&usableV>0?(<>
+                    <RRow label="Total catalyst mass" value={fmt(fKg(catMass),0)} unit={U.mass} hi/>
+                    <RRow label="Vessel cross-section" value={fmt(units==="si"?xs:xs*FT3_PER_M3/3.28084)} unit={U.area}/>
+                    <Divider/>
+                    {contWtKg>0?(<>
+                      <RRow label={container==="drum"?"Drums needed":"Bags needed"} value={fmtI(nCont)} sub={`${fmt(fKg(contWtKg),0)} ${U.mass} / ${container} — ${calcMat?.name}`}/>
+                      {contVolM3&&<RRow label="Bed rise per container" value={fmt(fSm(risePerCont))} unit={U.sm} sub="Height increase per container loaded"/>}
+                    </>):<div style={{fontSize:11,color:C.dim,padding:"6px 0"}}>{calcMat?`Enter weight per ${container} for ${calcMat.name} in the Materials tab`:"Select a material above"}</div>}
+                  </>):<div style={{fontSize:12,color:C.dim,padding:"8px 0"}}>Enter vessel dimensions and select a material</div>}
+                </Card>
+                {/* tracker */}
+                <Card style={{border:`1px solid ${isDanger?"#7f1d1d":isWarn?"#78350f":C.border}`}}>
+                  <STitle color={isDanger?C.red:isWarn?C.amber:C.accent}>④ Distributor &amp; Outage Tracker</STitle>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+                    <div><Label>Distributor Bottom Elev. ({U.len})</Label><TInp value={distElev} onChange={setDistElev} placeholder={units==="si"?"e.g. 5.5":"e.g. 18"}/><Hint>From bottom tangent up to distributor bottom</Hint></div>
+                    <div><Label>Warning Threshold ({U.len})</Label><TInp value={clearWarn} onChange={setClearWarn} placeholder={units==="si"?"0.30":"1.0"}/><Hint>Alert when clearance drops below this</Hint></div>
+                    <div style={{gridColumn:"1/-1"}}>
+                      <Label>Containers Loaded Per Layer</Label>
+                      <div style={{background:C.panel,borderRadius:8,padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
+                        {layers.every(l=>nv(l.actualContainers)===0)
+                          ? <div style={{fontSize:11,color:C.dim}}>Enter actual container counts per layer in the Bed Diagram tab. The tracker will automatically compute bed height from each material's actual density and container weight.</div>
+                          : layers.filter(l=>nv(l.actualContainers)>0).map(l=>{
+                              const mat=getMat(l.materialId);
+                              const actC=nv(l.actualContainers);
+                              const rhoMat=mat?toRho(mat.density):0;
+                              const wt=mat?toKg(container==="drum"?mat.drumWt:mat.bagWt):0;
+                              const vol=rhoMat>0&&wt>0?(actC*wt)/rhoMat:0;
+                              const rise=xs>0&&vol>0?fSm(vol/xs):null;
+                              return(
+                                <div key={l.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
+                                  <span style={{color:LC[l.type],fontWeight:600}}>{l.name}</span>
+                                  <span style={{color:C.muted}}>{actC} {container}s{rise!=null?` → ${fmt(rise,1)} ${U.sm}`:""}</span>
+                                </div>
+                              );
+                            })
+                        }
+                        {layers.some(l=>nv(l.actualContainers)>0)&&(
+                          <div style={{borderTop:`1px solid ${C.border}`,marginTop:4,paddingTop:6,display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:700}}>
+                            <span style={{color:C.text}}>Total</span>
+                            <span style={{color:C.accent}}>{drumsN} {container}s → {xs>0&&totalLoadedVolM3>0?fmt(fSm(totalLoadedVolM3/xs),1):"—"} {U.sm} rise</span>
+                          </div>
+                        )}
+                      </div>
+                      <Hint>Container counts come from Bed Diagram → Actual containers per layer</Hint>
+                    </div>
+                    <div><Label>Flange Face → Basket Top ({U.len})</Label><TInp value={flangeToBskt} onChange={setFlangeToBskt} placeholder={units==="si"?"e.g. 7.0":"e.g. 23"}/><Hint>Total internal height flange to basket top</Hint></div>
+                  </div>
+                  <VesselTracker
+                    layers={layers} layerVolContrib={layerVolContrib}
+                    xs={xs} bedBottomElev={bedBottomElev}
+                    currentBedTopElev={currentBedTopElev} distElevM={distElevM}
+                    clearDist={clearDist} clearWarnM={clearWarnM}
+                    totalOutageM={totalOutageM} remainingOutage={remainingOutage}
+                    fillPct={fillPct} isWarn={isWarn} isDanger={isDanger} drumsN={drumsN}
+                    fM={fM} fSm={fSm} fKg={fKg} fRho={fRho} toRho={toRho} toKg={toKg}
+                    U={U} C={C} LC={LC} getMat={getMat} container={container}
+                    fmt={fmt} fmtI={fmtI}/>
+                </Card>
+              </div>
+            </div>
+          )}
+
+          {/* ══ DIAGRAM ══ */}
+          {tab==="diagram"&&(
+            <div style={{display:"grid",gridTemplateColumns:"420px 1fr",gap:16,alignItems:"start"}}>
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <Card>
+                  <STitle>Loading Diagram</STitle>
+                  <div style={{fontSize:11,color:C.muted,marginBottom:12,lineHeight:1.5}}>
+                    Layers listed top → bottom. Each layer has a final outage field and optional interim outage checks.
+                  </div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16}}>
+                    {Object.entries(LL).map(([type,label])=>(
+                      <button key={type} onClick={()=>addLayer(type)} style={{background:"transparent",border:`1.5px solid ${LC[type]}`,color:LC[type],borderRadius:6,padding:"5px 10px",fontSize:10,fontWeight:700,fontFamily:"inherit",cursor:"pointer",letterSpacing:"0.06em"}}>+ {label.split(" ")[0]}</button>
+                    ))}
+                  </div>
+
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    {[...layers].reverse().map((layer,revIdx)=>{
+                      const realIdx=layers.length-1-revIdx;
+                      const col=LC[layer.type];
+                      const isDO=dragOver===realIdx;
+                      const mat=getMat(layer.materialId);
+                      const est=layerContainerEst(layer);
+                      return(
+                        <div key={layer.id} className="lcard" draggable
+                          onDragStart={()=>setDragIdx(realIdx)}
+                          onDragOver={e=>{e.preventDefault();setDragOver(realIdx);}}
+                          onDragLeave={()=>setDragOver(null)}
+                          onDrop={()=>{if(dragIdx!=null&&dragIdx!==realIdx)moveLayer(dragIdx,realIdx);setDragIdx(null);setDragOver(null);}}
+                          style={{background:isDO?"#1a2e50":C.panel,border:`1px solid ${isDO?C.accent:col+"44"}`,borderRadius:9,padding:"10px 12px",transition:"all 0.15s"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                            <div className="dh" style={{opacity:0.3,cursor:"grab",fontSize:14,color:C.muted,transition:"opacity 0.15s",userSelect:"none"}}>⠿</div>
+                            <div style={{width:8,height:8,borderRadius:2,background:col,flexShrink:0}}/>
+                            <input value={layer.name} onChange={e=>updLayer(layer.id,"name",e.target.value)}
+                              style={{flex:1,background:"transparent",border:"none",color:C.text,fontSize:12,fontWeight:600,fontFamily:"inherit",outline:"none"}}/>
+                            <button onClick={()=>removeLayer(layer.id)} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:16,padding:"0 2px",lineHeight:1}}>×</button>
+                          </div>
+                          {/* material */}
+                          <div style={{marginBottom:10}}>
+                            <Label style={{marginBottom:3}}>Assigned Material</Label>
+                            <Sel small value={layer.materialId} onChange={v=>updLayer(layer.id,"materialId",v)}>
+                              <option value="">— Select material —</option>
+                              {activeCats.length>0&&<optgroup label="Catalysts">{activeCats.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>}
+                              {activeIcbs.length>0&&<optgroup label="ICBs">{activeIcbs.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>}
+                            </Sel>
+                            {mat&&<div style={{fontSize:10,color:C.muted,marginTop:4}}>ρ = {nv(mat.density)>0?`${fmt(fRho(toRho(mat.density)))} ${U.dens}`:"—"} · {container}: {(()=>{const w=toKg(container==="drum"?mat.drumWt:mat.bagWt);return w>0?`${fmt(fKg(w),0)} ${U.mass}`:"not set";})()}</div>}
+                          </div>
+                          {/* thickness + density */}
+                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
+                            <div><Label style={{marginBottom:3}}>Target Thick ({U.len})</Label><TInp small value={layer.targetThick} onChange={v=>updLayer(layer.id,"targetThick",v)}/></div>
+                            <div><Label style={{marginBottom:3}}>Actual Thick ({U.len})</Label><TInp small value={layer.actualThick} onChange={v=>updLayer(layer.id,"actualThick",v)}/></div>
+                            <div><Label style={{marginBottom:3}}>Target Density ({U.dens})</Label><TInp small value={layer.targetDensity} onChange={v=>updLayer(layer.id,"targetDensity",v)} placeholder={mat&&mat.density?fmt(fRho(toRho(mat.density)),0):"—"}/></div>
+                            <div><Label style={{marginBottom:3}}>Actual Density ({U.dens})</Label><TInp small value={layer.actualDensity} onChange={v=>updLayer(layer.id,"actualDensity",v)}/></div>
+                          </div>
+                          {/* est + actual containers side by side */}
+                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
+                            <div style={{background:"#0a1e3d",border:`1px solid ${C.border}`,borderRadius:7,padding:"7px 10px"}}>
+                              <div style={{fontSize:9,color:C.dim,marginBottom:3}}>Est. {container}s</div>
+                              <div style={{fontSize:18,fontWeight:800,color:C.purple}}>{est!=null?fmtI(est):"—"}</div>
+                              {!est&&layer.materialId&&<div style={{fontSize:9,color:C.dim,marginTop:2}}>enter target thickness</div>}
+                            </div>
+                            <div style={{background:"#0a2218",border:`1px solid #1a4030`,borderRadius:7,padding:"7px 10px"}}>
+                              <div style={{fontSize:9,color:C.dim,marginBottom:3}}>Actual {container}s</div>
+                              <TInp small value={layer.actualContainers} onChange={v=>updLayer(layer.id,"actualContainers",v)} placeholder="—"/>
+                            </div>
+                          </div>
+
+                          {/* ── Outage tracking ── */}
+                          <div style={{borderTop:`1px solid ${col}33`,paddingTop:8}}>
+                            {/* Final outage for this layer */}
+                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                              <div style={{fontSize:9,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:col,flex:1}}>
+                                Final Outage ({U.sm})
+                              </div>
+                              <button onClick={()=>addSubOutage(layer.id)}
+                                style={{background:"transparent",border:`1px solid ${col}66`,borderRadius:5,
+                                  color:col,fontSize:10,fontWeight:700,padding:"2px 8px",cursor:"pointer",
+                                  display:"flex",alignItems:"center",gap:3}}>
+                                <span style={{fontSize:13,lineHeight:1}}>+</span> Add Interim Check
+                              </button>
+                            </div>
+                            <div style={{display:"grid",gridTemplateColumns:"1fr",gap:4,marginBottom:6}}>
+                              <TInp small value={layer.finalOutage||""} onChange={v=>updLayer(layer.id,"finalOutage",v)}
+                                placeholder={`Final outage from top tangent (${U.sm})`} unit={U.sm}/>
+                              {layer.finalOutage&&<div style={{fontSize:10,color:col,fontWeight:600}}>
+                                → Layer top at: {(()=>{
+                                  const outM=units==="si"?nv(layer.finalOutage)/100:nv(layer.finalOutage)/IN_PER_M;
+                                  const topFromBot=Hs>0?fM(Hs-outM):null;
+                                  return topFromBot!=null?`${fmt(topFromBot,2)} ${U.len} from bottom tangent`:"enter vessel height";
+                                })()}
+                              </div>}
+                            </div>
+
+                            {/* Sub-outage measurements — each is independent drums/outage pair */}
+                            {(layer.subOutages||[]).length>0&&(
+                              <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:4}}>
+                                {/* column headers */}
+                                <div style={{display:"grid",gridTemplateColumns:"44px 1fr 1fr 1fr 24px",gap:4,padding:"2px 0"}}>
+                                  <div style={{fontSize:9,color:C.dim,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>#</div>
+                                  <div style={{fontSize:9,color:C.dim,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>{container}s at check</div>
+                                  <div style={{fontSize:9,color:C.dim,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>Outage ({U.sm})</div>
+                                  <div style={{fontSize:9,color:C.dim,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>% of layer</div>
+                                  <div/>
+                                </div>
+                                {(layer.subOutages||[]).map((so,si)=>{
+                                  const totalC=nv(layer.actualContainers);
+                                  const atCheck=nv(so.drums);
+                                  const pct=totalC>0&&atCheck>0?Math.min(100,(atCheck/totalC)*100):null;
+                                  return(
+                                    <div key={so.id} style={{background:"#0a1525",borderRadius:7,padding:"7px 8px",border:`1px solid ${col}33`}}>
+                                      <div style={{display:"grid",gridTemplateColumns:"44px 1fr 1fr 1fr 24px",gap:4,alignItems:"center",marginBottom:pct!=null?6:0}}>
+                                        <div style={{fontSize:10,fontWeight:700,color:col}}>#{si+1}</div>
+                                        <TInp small value={so.drums} onChange={v=>updSubOutage(layer.id,so.id,"drums",v)} placeholder={`e.g. ${(si+1)*10}`}/>
+                                        <TInp small value={so.outage} onChange={v=>updSubOutage(layer.id,so.id,"outage",v)} placeholder={units==="si"?"cm":"in"} unit={U.sm}/>
+                                        <div style={{fontSize:10,fontWeight:700,color:pct!=null?C.amber:C.dim}}>
+                                          {pct!=null?`${pct.toFixed(0)}%`:"—"}
+                                        </div>
+                                        <button onClick={()=>removeSubOutage(layer.id,so.id)}
+                                          style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>×</button>
+                                      </div>
+                                      {/* mini progress bar showing where in the layer this check was taken */}
+                                      {pct!=null&&(
+                                        <div style={{height:4,background:C.panel,borderRadius:999,overflow:"hidden",position:"relative"}}>
+                                          <div style={{position:"absolute",left:0,top:0,bottom:0,width:`${pct}%`,
+                                            background:`linear-gradient(90deg,${col}88,${col})`,borderRadius:999}}/>
+                                          <div style={{position:"absolute",left:`${pct}%`,top:0,bottom:0,width:2,background:C.amber,transform:"translateX(-1px)"}}/>
+                                        </div>
+                                      )}
+                                      {so.outage&&<div style={{fontSize:9,color:C.muted,marginTop:3}}>
+                                        Outage: <span style={{color:C.amber,fontWeight:600}}>{so.outage} {U.sm}</span>
+                                        {so.drums&&<span style={{color:C.dim}}> at {so.drums} {container}s{pct!=null?` (${pct.toFixed(0)}% through layer)`:""}</span>}
+                                      </div>}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {(layer.subOutages||[]).length===0&&(
+                              <div style={{fontSize:10,color:C.dim,padding:"2px 0"}}>No interim checks yet — click "+ Add Interim Check" to log outage at each drum stop</div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <Divider/>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+                    {[
+                      ["Target H",totalTarget>0?`${fmt(totalTarget)} ${U.len}`:"—",C.text],
+                      ["Actual H",totalActual>0?`${fmt(totalActual)} ${U.len}`:"—",C.accent],
+                      [`Est. ${container==="drum"?"Drums":"Bags"}`,totalEstContainers>0?fmtI(totalEstContainers):"—",C.purple],
+                      [`Act. ${container==="drum"?"Drums":"Bags"}`,totalActContainers>0?fmtI(totalActContainers):"—",C.green],
+                    ].map(([lbl,val,col])=>(
+                      <div key={lbl} style={{background:C.panel,borderRadius:7,padding:"8px 10px"}}>
+                        <Label style={{marginBottom:4}}>{lbl}</Label>
+                        <div style={{fontSize:14,fontWeight:700,color:col}}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{marginTop:14,display:"flex",gap:8}}>
+                    <button onClick={()=>exportDiagramPDF(layers,catalysts,icbs,units,container,xs,toRho,toKg,fRho,fM,fKg,U,getMat,layerContainerEst,fmtI,fmt)}
+                      style={{flex:1,background:C.accent,border:"none",borderRadius:8,color:"#060f1e",fontWeight:700,fontSize:12,fontFamily:"inherit",padding:"10px 0",cursor:"pointer"}}>
+                      ↓ Export Diagram PDF
+                    </button>
+                  </div>
+                </Card>
+              </div>
+
+              {/* right: visual */}
+              <div style={{position:"sticky",top:20}}>
+                <Card>
+                  <STitle>Vessel Cross-Section</STitle>
+                  <div style={{display:"flex",gap:20,alignItems:"flex-start"}}>
+                    {/* vessel drawing */}
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"center",width:160,flexShrink:0}}>
+                      <div style={{width:28,height:10,background:"#1e3a5f",border:`1px solid ${C.border}`,borderRadius:"4px 4px 0 0"}}/>
+                      <div style={{width:100,height:12,background:"#1e3a5f",border:`1px solid ${C.border}`,borderRadius:"4px 4px 0 0"}}/>
+                      <div style={{width:100}}><svg width="100" height="30" viewBox="0 0 100 30"><path d="M0 0 Q50 30 100 0" fill="#111f35" stroke="#1e3a5f" strokeWidth="1.5"/><text x="50" y="22" textAnchor="middle" fontSize="7" fill="#475569">Distributor</text></svg></div>
+                      {(()=>{
+                        const maxH=Math.max(totalActual,totalTarget,0.01);
+                        const SHELL_PX=320;
+                        return(
+                          <div style={{width:100,border:`1.5px solid ${C.border}`,borderTop:"none",borderBottom:"none",display:"flex",flexDirection:"column-reverse",minHeight:SHELL_PX,background:C.panel,position:"relative"}}>
+                            {layers.map(layer=>{
+                              const th=nv(layer.actualThick)||nv(layer.targetThick);
+                              if(th<=0) return null;
+                              const px=Math.max(18,(th/maxH)*SHELL_PX);
+                              const col=LC[layer.type];
+                              const hasAct=nv(layer.actualThick)>0;
+                              const tgtD=nv(layer.targetDensity),actD=nv(layer.actualDensity);
+                              const densOk=tgtD>0&&actD>0?Math.abs(actD-tgtD)/tgtD<0.05:null;
+                              const est=layerContainerEst(layer);
+                              const actCont=nv(layer.actualContainers);
+                              // Build interim check lines — each positioned as pct% from bottom of this layer
+                              const totalC=nv(layer.actualContainers);
+                              const subChecks=(layer.subOutages||[]).filter(so=>nv(so.drums)>0||nv(so.outage)>0);
+                              return(
+                                <div key={layer.id} title={layer.name} style={{height:px,background:`${col}22`,borderTop:`2px solid ${col}88`,display:"flex",flexDirection:"column",justifyContent:"center",padding:"0 6px",flexShrink:0,position:"relative",overflow:"visible"}}>
+                                  {!hasAct&&<div style={{position:"absolute",inset:0,opacity:0.12,backgroundImage:`repeating-linear-gradient(45deg,${col} 0,${col} 1px,transparent 0,transparent 50%)`,backgroundSize:"8px 8px"}}/>}
+
+                                  {/* Interim check lines — horizontal dashed lines inside the layer */}
+                                  {subChecks.map((so,si)=>{
+                                    const atC=nv(so.drums);
+                                    const pct=totalC>0&&atC>0?Math.min(100,(atC/totalC)*100):null;
+                                    if(pct==null) return null;
+                                    // pct% from bottom of div = (100-pct)% from top
+                                    const topPct=100-pct;
+                                    return(
+                                      <div key={so.id} style={{position:"absolute",left:0,right:0,
+                                        top:`${topPct}%`,height:0,overflow:"visible",zIndex:3}}>
+                                        {/* dashed line across full width */}
+                                        <div style={{position:"absolute",left:0,right:0,height:1,
+                                          background:`repeating-linear-gradient(90deg,${C.amber} 0px,${C.amber} 4px,transparent 4px,transparent 8px)`}}/>
+                                        {/* label on right side */}
+                                        <div style={{position:"absolute",right:-46,top:-8,
+                                          fontSize:7,color:C.amber,fontWeight:700,whiteSpace:"nowrap",
+                                          background:"#060f1e",padding:"1px 3px",borderRadius:2,lineHeight:1.4}}>
+                                          {so.drums&&`${so.drums}▸`}{so.outage?`${so.outage}${units==="si"?"c":"″"}`:`chk${si+1}`}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+
+                                  {/* Final outage tick at top of layer */}
+                                  {layer.finalOutage&&(
+                                    <div style={{position:"absolute",left:0,right:0,top:0,height:0,overflow:"visible",zIndex:4}}>
+                                      <div style={{position:"absolute",left:0,right:0,height:2,background:col,opacity:0.9}}/>
+                                      <div style={{position:"absolute",right:-46,top:-8,
+                                        fontSize:7,color:col,fontWeight:800,whiteSpace:"nowrap",
+                                        background:"#060f1e",padding:"1px 3px",borderRadius:2,lineHeight:1.4}}>
+                                        ⊕{layer.finalOutage}{units==="si"?"c":"″"}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div style={{fontSize:8,fontWeight:700,color:col,lineHeight:1.3,zIndex:1}}>{layer.name.length>14?layer.name.slice(0,13)+"…":layer.name}</div>
+                                  <div style={{fontSize:7,color:C.muted,zIndex:1,display:"flex",gap:4,flexWrap:"wrap"}}>
+                                    {densOk!=null&&<span style={{color:densOk?C.green:C.amber}}>{densOk?"✓":"⚠"} ρ</span>}
+                                    {est!=null&&<span style={{color:C.purple}}>{est}</span>}
+                                    {actCont>0&&<span style={{color:C.green}}>({actCont})</span>}
+                                    {subChecks.length>0&&<span style={{color:C.amber}}>{subChecks.length} checks</span>}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {layers.every(l=>nv(l.actualThick)===0&&nv(l.targetThick)===0)&&(
+                              <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:C.dim,textAlign:"center",padding:12}}>Enter layer thicknesses</div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                      <div style={{width:100}}><svg width="100" height="30" viewBox="0 0 100 30"><path d="M0 30 Q50 0 100 30" fill="#111f35" stroke="#1e3a5f" strokeWidth="1.5"/>{hasBasket&&<rect x="38" y="10" width="24" height="20" fill="#f59e0b33" stroke={C.amber} strokeWidth="1" rx="2"/>}</svg></div>
+                      <div style={{width:100,height:12,background:"#1e3a5f",border:`1px solid ${C.border}`,borderTop:"none",borderRadius:"0 0 4px 4px"}}/>
+                      <div style={{width:28,height:10,background:"#1e3a5f",border:`1px solid ${C.border}`,borderTop:"none",borderRadius:"0 0 4px 4px"}}/>
+                    </div>
+
+                    {/* table */}
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:C.muted,marginBottom:10}}>Layer Summary</div>
+                      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr",gap:3,padding:"4px 8px",marginBottom:4}}>
+                        {["Layer","Material","Tgt H","Act H","Tgt ρ","Act ρ",`Est ${container==="drum"?"Dr":"Bg"}`,`Act ${container==="drum"?"Dr":"Bg"}`,`Final Outage (${U.sm})`,"Interim Checks"].map(h=>(
+                          <div key={h} style={{fontSize:9,fontWeight:700,color:C.dim,letterSpacing:"0.06em",textTransform:"uppercase"}}>{h}</div>
+                        ))}
+                      </div>
+                      {[...layers].reverse().map(layer=>{
+                        const col=LC[layer.type];
+                        const mat=getMat(layer.materialId);
+                        const tgtD=nv(layer.targetDensity),actD=nv(layer.actualDensity);
+                        const tgtT=nv(layer.targetThick),actT=nv(layer.actualThick);
+                        const dVar=tgtD>0&&actD>0?((actD-tgtD)/tgtD*100):null;
+                        const tVar=tgtT>0&&actT>0?((actT-tgtT)/tgtT*100):null;
+                        const est=layerContainerEst(layer);
+                        const actC=nv(layer.actualContainers);
+                        return(
+                          <div key={layer.id} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr",gap:3,padding:"6px 8px",borderRadius:6,marginBottom:4,background:C.panel,borderLeft:`3px solid ${col}`}}>
+                            <div style={{fontSize:11,fontWeight:600,color:col,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{layer.name}</div>
+                            <div style={{fontSize:10,color:C.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{mat?mat.name:"—"}</div>
+                            <div style={{fontSize:11,color:C.text}}>{tgtT>0?fmt(tgtT):"—"}</div>
+                            <div style={{fontSize:11,color:tVar!=null?(Math.abs(tVar)<5?C.green:C.amber):C.text}}>
+                              {actT>0?fmt(actT):"—"}{tVar!=null&&<span style={{fontSize:9,marginLeft:2}}>{tVar>0?"+":""}{tVar.toFixed(1)}%</span>}
+                            </div>
+                            <div style={{fontSize:11,color:C.text}}>{tgtD>0?fmt(tgtD,0):"—"}</div>
+                            <div style={{fontSize:11,color:dVar!=null?(Math.abs(dVar)<5?C.green:C.amber):C.text}}>
+                              {actD>0?fmt(actD,0):"—"}{dVar!=null&&<span style={{fontSize:9,marginLeft:2}}>{dVar>0?"+":""}{dVar.toFixed(1)}%</span>}
+                            </div>
+                            <div style={{fontSize:13,fontWeight:800,color:C.purple}}>{est!=null?fmtI(est):"—"}</div>
+                            <div style={{fontSize:13,fontWeight:800,color:C.green}}>{actC>0?fmtI(actC):"—"}</div>
+                            <div style={{fontSize:11,color:C.amber,fontWeight:600}}>
+                              {layer.finalOutage?`${layer.finalOutage} ${units==="si"?"cm":"in"}`:"—"}
+                            </div>
+                            <div style={{fontSize:11,color:C.muted}}>
+                              {(layer.subOutages||[]).length>0
+                                ?(layer.subOutages||[]).map(so=>`${so.drums||"?"}→${so.outage||"?"}${units==="si"?"cm":"in"}`).join(", ")
+                                :"—"}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr",gap:3,padding:"8px 8px",borderRadius:6,background:"#0a1e3d",border:`1px solid ${C.border}`,marginTop:8,overflowX:"auto"}}>
+                        <div style={{fontSize:11,fontWeight:700,color:C.accent}}>TOTAL</div><div/>
+                        <div style={{fontSize:11,fontWeight:700,color:C.text}}>{totalTarget>0?fmt(totalTarget):"—"}</div>
+                        <div style={{fontSize:11,fontWeight:700,color:C.accent}}>{totalActual>0?fmt(totalActual):"—"}</div>
+                        <div/><div/>
+                        <div style={{fontSize:13,fontWeight:800,color:C.purple}}>{totalEstContainers>0?fmtI(totalEstContainers):"—"}</div>
+                        <div style={{fontSize:13,fontWeight:800,color:C.green}}>{totalActContainers>0?fmtI(totalActContainers):"—"}</div>
+                      </div>
+                      <div style={{marginTop:12,display:"flex",gap:8,flexWrap:"wrap"}}>
+                        {Object.entries(LC).map(([type,col])=>(
+                          <div key={type} style={{display:"flex",alignItems:"center",gap:4}}>
+                            <div style={{width:9,height:9,borderRadius:2,background:col}}/><span style={{fontSize:9,color:C.muted}}>{LL[type]}</span>
+                          </div>
+                        ))}
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <span style={{fontSize:9,color:C.purple,fontWeight:700}}>Est.</span><span style={{fontSize:9,color:C.muted}}> / </span><span style={{fontSize:9,color:C.green,fontWeight:700}}>Act.</span><span style={{fontSize:9,color:C.muted}}> containers</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+            </div>
+          )}
+
+          {/* ══ REPORT ══ */}
+          {tab==="report"&&(
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+              <Card>
+                <STitle color={C.green}>Report Information</STitle>
+                <div style={{fontSize:11,color:C.muted,marginBottom:16,lineHeight:1.5}}>
+                  Fill in the project details below. The report will combine these with all vessel geometry, materials, and bed configuration data you've entered throughout the app.
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                  <div><Label>Customer / Company Name</Label><TxtInp value={rpCustomer} onChange={setRpCustomer} placeholder="e.g. Saudi Aramco"/></div>
+                  <div><Label>Country</Label><TxtInp value={rpCountry} onChange={setRpCountry} placeholder="e.g. Saudi Arabia"/></div>
+                  <div><Label>Plant / Facility</Label><TxtInp value={rpPlant} onChange={setRpPlant} placeholder="e.g. Ras Tanura Refinery"/></div>
+                  <div><Label>Vessel Tag / ID</Label><TxtInp value={rpVessel} onChange={setRpVessel} placeholder="e.g. R-101"/></div>
+                  <div><Label>Loading Date</Label>
+                    <input type="date" value={rpDate} onChange={e=>setRpDate(e.target.value)}
+                      style={{width:"100%",background:C.panel,border:`1px solid ${C.border}`,borderRadius:7,color:C.text,fontSize:14,fontFamily:"inherit",padding:"9px 12px",outline:"none"}}
+                      onFocus={e=>e.target.style.borderColor=C.accent} onBlur={e=>e.target.style.borderColor=C.border}/>
+                  </div>
+                  <div><Label>Prepared By</Label><TxtInp value={rpPreparedBy} onChange={setRpPreparedBy} placeholder="Engineer name / company"/></div>
+                </div>
+              </Card>
+
+              <Card>
+                <STitle color={C.purple}>Report Preview</STitle>
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  {[
+                    ["Customer",rpCustomer||"[not set]"],
+                    ["Country",rpCountry||"[not set]"],
+                    ["Plant",rpPlant||"[not set]"],
+                    ["Vessel",rpVessel||"[not set]"],
+                    ["Date",rpDate?new Date(rpDate+"T12:00:00").toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}):"[not set]"],
+                    ["Prepared By",rpPreparedBy||"[not set]"],
+                    ["Loading Method",loadMethod==="freefill"?"Free Fall":loadMethod==="sock"?"Sock Loading":"Dense Phase Loading"],
+                    ["Container Type",container==="drum"?"55-gal Drum":"Supersack / Bag"],
+                    ["Vessel Diameter",shellID?`${shellID} ${U.len}`:"[not set]"],
+                    ["Usable Volume",usableV>0?`${fmt(fV(usableV))} ${U.vol}`:"[not set]"],
+                    ["Total Layers",String(layers.length)],
+                    ["Total Target Height",totalTarget>0?`${fmt(totalTarget)} ${U.len}`:"[not set]"],
+                    ["Est. Total Containers",totalEstContainers>0?fmtI(totalEstContainers):"[not set]"],
+                    ["Materials Defined",String(allMaterials.filter(m=>m.name.trim()&&nv(m.density)>0).length)],
+                  ].map(([lbl,val])=>(
+                    <div key={lbl} style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"5px 0",borderBottom:"1px solid #0a1626"}}>
+                      <span style={{fontSize:11,color:C.muted}}>{lbl}</span>
+                      <span style={{fontSize:12,fontWeight:600,color:val.startsWith("[")?C.dim:C.text}}>{val}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{marginTop:20,display:"flex",flexDirection:"column",gap:10}}>
+                  <button onClick={()=>exportReportPDF({customer:rpCustomer,country:rpCountry,plant:rpPlant,vessel:rpVessel,date:rpDate?new Date(rpDate+"T12:00:00").toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}):"",preparedBy:rpPreparedBy,loadMethod,catalysts,icbs,layers,units,container,shellID,shellH,topHead,botHead,hasBasket,basketOD,basketH,grossV,usableV,getMat,layerContainerEst,toRho,toKg,fRho,fM,fKg,fV,U,fmt,fmtI})}
+                    style={{width:"100%",background:C.green,border:"none",borderRadius:8,color:"#060f1e",fontWeight:800,fontSize:13,fontFamily:"inherit",padding:"12px 0",cursor:"pointer"}}>
+                    ↓ Export Loading Report PDF
+                  </button>
+                  <button onClick={()=>exportDiagramPDF(layers,catalysts,icbs,units,container,xs,toRho,toKg,fRho,fM,fKg,U,getMat,layerContainerEst,fmtI,fmt)}
+                    style={{width:"100%",background:"transparent",border:`1px solid ${C.accent}`,borderRadius:8,color:C.accent,fontWeight:700,fontSize:13,fontFamily:"inherit",padding:"12px 0",cursor:"pointer"}}>
+                    ↓ Export Diagram PDF
+                  </button>
+                </div>
+
+                <div style={{marginTop:16,fontSize:10,color:C.dim,lineHeight:1.5}}>
+                  Both exports download as <strong>.html files</strong> you can open in any browser and print to PDF. All data stays on your device — nothing is sent to a server.
+                </div>
+
+                <Divider/>
+                <STitle color={C.teal}>📱 Use on Phone / Share with Coworkers</STitle>
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  {[
+                    {
+                      title:"Open on your phone",
+                      body:"Go to claude.ai in your phone's browser and open this same conversation. The app runs fully in the browser — no install needed. Works on iPhone Safari and Android Chrome."
+                    },
+                    {
+                      title:"Share with a coworker",
+                      body:"The easiest way: share the Claude.ai conversation link. Or copy the exported .jsx file and have them open it in the Claude artifact viewer. Alternatively, drop the .html export into a shared folder (Google Drive, Dropbox, Teams) — they can open it in any browser."
+                    },
+                    {
+                      title:"Save as a standalone web app (advanced)",
+                      body:"Download the .jsx file from this chat → paste it into stackblitz.com or codesandbox.io → share the live URL. Anyone with the link can use the full app, no Claude account needed."
+                    },
+                    {
+                      title:"Add to phone home screen",
+                      body:"Open Claude.ai on your phone → navigate to this conversation → tap Share → 'Add to Home Screen'. It will behave like an app icon and open directly to this tool."
+                    },
+                  ].map(({title,body})=>(
+                    <div key={title} style={{background:C.panel,borderRadius:9,padding:"11px 14px",borderLeft:`3px solid ${C.teal}`}}>
+                      <div style={{fontSize:12,fontWeight:700,color:C.teal,marginBottom:4}}>{title}</div>
+                      <div style={{fontSize:11,color:C.muted,lineHeight:1.55}}>{body}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{marginTop:8,fontSize:10,color:C.dim,lineHeight:1.5}}>Exports download as .html files — open in any browser and use File → Print → Save as PDF.</div>
+              </Card>
+            </div>
+          )}
+
+
+          {/* ══ DENSE LOADING ══ */}
+          {tab==="dense"&&(()=>{
+            // Dense loading tracker — one session per catalyst layer
+            // Each session has: material, target density, check interval, and a log of measurement rows
+            // Each row: container# at check, cumulative mass loaded into that layer, measured outage, calculated density, variance, RPM recommendation
+            const sess=dSessions[activeSession>=0&&activeSession<dSessions.length?activeSession:0];
+            const sIdx=activeSession>=0&&activeSession<dSessions.length?activeSession:0;
+            const mat=getMat(sess?.materialId);
+            const tgtRhoSI=sess?toRho(sess.targetDensity||mat?.density||""):0;
+
+            // Session material container weight (kg)
+            const sessContWtKg=mat?toKg(container==="drum"?mat.drumWt:mat.bagWt):0;
+
+            const checkResults=(sess?.checks||[]).map(chk=>{
+              // Simple: mass = containers loaded × kg per container (from material registry)
+              //         vol  = vessel cross-section × measured layer thickness
+              //         ρ    = mass / vol
+              const nConts=nv(chk.containersLoaded);
+              const thickM=toM(chk.layerThick);
+              const massKg=nConts>0&&sessContWtKg>0?nConts*sessContWtKg:null;
+              const layVol=thickM>0&&xs>0?xs*thickM:null;
+              const calcRho=massKg&&layVol&&massKg>0&&layVol>0?massKg/layVol:null;
+              const varPct=calcRho&&tgtRhoSI>0?((calcRho-tgtRhoSI)/tgtRhoSI*100):null;
+              let rec="—", recColor=C.muted, rpmAdj="";
+              if(varPct!=null){
+                const abs=Math.abs(varPct);
+                if(abs<2){rec="On target";recColor=C.green;rpmAdj="Maintain RPM";}
+                else if(varPct<-10){rec="Way too low";recColor=C.red;rpmAdj="↑ RPM ~10%";}
+                else if(varPct<-5){rec="Too low";recColor=C.amber;rpmAdj="↑ RPM ~5%";}
+                else if(varPct<-2){rec="Slightly low";recColor="#fde68a";rpmAdj="↑ RPM 2–3%";}
+                else if(varPct>10){rec="Way too high";recColor=C.red;rpmAdj="↓ RPM ~10%";}
+                else if(varPct>5){rec="Too high";recColor=C.amber;rpmAdj="↓ RPM ~5%";}
+                else{rec="Slightly high";recColor="#fde68a";rpmAdj="↓ RPM 2–3%";}
+              }
+              return{...chk,nConts,thickM,massKg,calcRho,varPct,rec,recColor,rpmAdj};
+            });
+
+            const lastCheck=checkResults.filter(r=>r.calcRho!=null).slice(-1)[0]||null;
+            const latestRho=lastCheck?.calcRho||null;
+            const latestVar=lastCheck?.varPct||null;
+
+            return(
+              <div style={{display:"flex",flexDirection:"column",gap:16}}>
+
+                {/* top: session tabs + config inline */}
+                <Card>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
+                    <STitle color={C.purple}>Dense Loading Tracker</STitle>
+                    <button onClick={()=>{setDSessions(s=>[...s,newDSession()]);setActiveSession(dSessions.length);}}
+                      style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:7,color:C.muted,fontFamily:"inherit",fontSize:11,fontWeight:600,padding:"6px 12px",cursor:"pointer",whiteSpace:"nowrap"}}>
+                      + Add Layer Session
+                    </button>
+                  </div>
+
+                  {/* session tab bar */}
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16}}>
+                    {dSessions.map((s,i)=>{
+                      const sMat=getMat(s.materialId);
+                      const sMat2=getMat(s.materialId);
+                      const sWt=sMat2?toKg(container==="drum"?sMat2.drumWt:sMat2.bagWt):0;
+                      const sChecks=s.checks.filter(c=>nv(c.containersLoaded)>0&&nv(c.layerThick)>0);
+                      const lastC=sChecks.slice(-1)[0];
+                      const lastRho=lastC&&sWt>0&&xs>0?(()=>{
+                        const mKg=nv(lastC.containersLoaded)*sWt;
+                        const lV=xs*toM(lastC.layerThick);
+                        return mKg>0&&lV>0?mKg/lV:null;
+                      })():null;
+                      const sTgt=toRho(s.targetDensity||sMat?.density||"");
+                      const sVar=lastRho&&sTgt>0?((lastRho-sTgt)/sTgt*100):null;
+                      const sOk=sVar!=null&&Math.abs(sVar)<2;
+                      const sWarn=sVar!=null&&!sOk&&Math.abs(sVar)<6;
+                      return(
+                        <button key={s.id} onClick={()=>setActiveSession(i)} style={{
+                          background:i===sIdx?"#1e3a5f":"transparent",
+                          border:`1.5px solid ${i===sIdx?C.accent:C.border}`,
+                          borderRadius:8,padding:"8px 14px",cursor:"pointer",fontFamily:"inherit",
+                          display:"flex",flexDirection:"column",alignItems:"flex-start",gap:2,minWidth:130}}>
+                          <span style={{fontSize:12,fontWeight:700,color:i===sIdx?C.accent:C.muted}}>{s.name||`Session ${i+1}`}</span>
+                          <span style={{fontSize:10,color:C.dim}}>{sMat?.name||"no material"} · {s.checks.length} checks</span>
+                          {sVar!=null&&<span style={{fontSize:10,fontWeight:700,color:sOk?C.green:sWarn?C.amber:C.red}}>{sVar>0?"+":""}{sVar.toFixed(1)}% vs target</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* session config row */}
+                  {sess&&(
+                    <div style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1.5fr 1fr",gap:12,padding:"14px 0 0",borderTop:`1px solid ${C.border}`}}>
+                      <div>
+                        <Label>Layer / Session Name</Label>
+                        <TxtInp value={sess.name} onChange={v=>updDSession(sIdx,"name",v)} placeholder="e.g. Catalyst Bed 1"/>
+                      </div>
+                      <div>
+                        <Label>Catalyst Material</Label>
+                        <Sel value={sess.materialId} onChange={v=>updDSession(sIdx,"materialId",v)}>
+                          <option value="">— Select —</option>
+                          {activeCats.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+                          {activeIcbs.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+                        </Sel>
+                        {mat&&nv(mat.density)>0&&<Hint>Registered: {fmt(fRho(toRho(mat.density)))} {U.dens}</Hint>}
+                      </div>
+                      <div>
+                        <Label>Target Density ({U.dens})</Label>
+                        <TInp value={sess.targetDensity} onChange={v=>updDSession(sIdx,"targetDensity",v)}
+                          placeholder={mat&&nv(mat.density)>0?fmt(fRho(toRho(mat.density)),0):"e.g. 800"}/>
+                        <Hint>From vendor data sheet</Hint>
+                      </div>
+                      <div>
+                        <Label>Check Every</Label>
+                        <TInp value={sess.checkEvery} onChange={v=>updDSession(sIdx,"checkEvery",v)} placeholder="10" unit={container+"s"}/>
+                      </div>
+                    </div>
+                  )}
+                </Card>
+
+                {/* live status banner */}
+                {tgtRhoSI>0&&latestRho!=null&&(()=>{
+                  const ok=Math.abs(latestVar)<2;
+                  const warn=!ok&&Math.abs(latestVar)<6;
+                  return(
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12}}>
+                      {[
+                        ["Latest Density",`${fmt(fRho(latestRho),0)} ${U.dens}`,ok?C.green:warn?C.amber:C.red],
+                        ["Target Density",`${fmt(fRho(tgtRhoSI),0)} ${U.dens}`,C.text],
+                        ["Variance",`${latestVar>0?"+":""}${latestVar.toFixed(1)}%`,ok?C.green:warn?C.amber:C.red],
+                        ["RPM Adjustment",lastCheck?.rpmAdj||"—",ok?C.green:warn?C.amber:C.red],
+                      ].map(([lbl,val,col])=>(
+                        <div key={lbl} style={{background:ok?"#0a2d1e":warn?"#1c1000":"#1c0a0a",
+                          border:`1px solid ${ok?C.green:warn?C.amber:C.red}`,borderRadius:10,padding:"12px 14px"}}>
+                          <div style={{fontSize:9,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:C.muted,marginBottom:6}}>{lbl}</div>
+                          <div style={{fontSize:20,fontWeight:800,color:col,lineHeight:1}}>{val}</div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* main check log table */}
+                {sess&&(
+                  <Card>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                      <STitle color={C.purple}>Check Log — {sess.name}</STitle>
+                      <button onClick={()=>addDCheck(sIdx)} style={{background:C.accent,border:"none",borderRadius:7,color:"#060f1e",fontWeight:700,fontSize:11,fontFamily:"inherit",padding:"7px 16px",cursor:"pointer"}}>
+                        + Add Check
+                      </button>
+                    </div>
+
+                    {/* column headers */}
+                    <div style={{display:"grid",gridTemplateColumns:"100px 110px 110px 110px 80px 80px 130px 36px",gap:8,padding:"8px 10px",background:C.panel,borderRadius:"6px 6px 0 0",borderBottom:`2px solid ${C.border}`}}>
+                      {[
+                        `${container}s loaded`,
+                        `Auto mass (${U.mass})`,
+                        `Layer thickness (${U.len})`,
+                        `Calc density (${U.dens})`,
+                        `vs target`,
+                        `Current RPM`,
+                        `Recommendation`,
+                        ``
+                      ].map((h,i)=>(
+                        <div key={i} style={{fontSize:9,fontWeight:700,color:C.dim,letterSpacing:"0.06em",textTransform:"uppercase",lineHeight:1.3}}>{h}</div>
+                      ))}
+                    </div>
+
+                    {sess.checks.length===0&&(
+                      <div style={{padding:"24px 0",textAlign:"center",color:C.dim,fontSize:12}}>
+                        No checks yet. Click "+ Add Check" every ~{sess.checkEvery||10} {container}s, then enter the number loaded and measured layer thickness.
+                      </div>
+                    )}
+
+                    <div style={{display:"flex",flexDirection:"column"}}>
+                      {checkResults.map((chk,ci)=>{
+                        const ok=chk.varPct!=null&&Math.abs(chk.varPct)<2;
+                        const warn=chk.varPct!=null&&!ok&&Math.abs(chk.varPct)<6;
+                        const rowBg=ci%2===0?C.panel:"#0a1525";
+                        return(
+                          <div key={chk.id} style={{display:"grid",gridTemplateColumns:"100px 110px 110px 110px 80px 80px 130px 36px",gap:8,padding:"9px 10px",background:rowBg,borderBottom:`1px solid ${C.border}`,alignItems:"center"}}>
+                            {/* containers loaded at this check */}
+                            <TInp small value={chk.containersLoaded} onChange={v=>updDCheck(sIdx,chk.id,"containersLoaded",v)}
+                              placeholder={`# ${container}s`}/>
+                            {/* auto-calculated mass — read only */}
+                            <div style={{background:"#070f1c",border:`1px solid ${C.border}`,borderRadius:7,padding:"6px 10px",fontSize:12,color:sessContWtKg>0&&nv(chk.containersLoaded)>0?C.text:C.dim}}>
+                              {sessContWtKg>0&&nv(chk.containersLoaded)>0
+                                ?`${fmt(fKg(nv(chk.containersLoaded)*sessContWtKg),0)} ${U.mass}`
+                                :<span style={{fontSize:10}}>enter {container}s</span>}
+                            </div>
+                            {/* measured layer thickness */}
+                            <TInp small value={chk.layerThick} onChange={v=>updDCheck(sIdx,chk.id,"layerThick",v)}
+                              placeholder={units==="si"?"e.g. 0.50":"e.g. 1.6"} unit={U.len}/>
+                            {/* calculated density */}
+                            <div style={{background:chk.calcRho!=null?`${ok?"#0a2d1e":warn?"#1c1000":"#1c0a0a"}`:"#070f1c",
+                              border:`1px solid ${chk.calcRho!=null?(ok?C.green:warn?C.amber:C.red):C.border}`,
+                              borderRadius:7,padding:"6px 8px",textAlign:"center"}}>
+                              {chk.calcRho!=null?(
+                                <div>
+                                  <div style={{fontSize:14,fontWeight:800,color:ok?C.green:warn?C.amber:C.red,lineHeight:1}}>
+                                    {fmt(fRho(chk.calcRho),0)}
+                                  </div>
+                                  <div style={{fontSize:9,color:C.dim,marginTop:1}}>{U.dens}</div>
+                                </div>
+                              ):<div style={{fontSize:10,color:C.dim}}>need thickness</div>}
+                            </div>
+                            {/* variance */}
+                            <div style={{textAlign:"center"}}>
+                              {chk.varPct!=null?(
+                                <div style={{fontSize:13,fontWeight:800,color:ok?C.green:warn?C.amber:C.red}}>
+                                  {chk.varPct>0?"+":""}{chk.varPct.toFixed(1)}%
+                                </div>
+                              ):<div style={{color:C.dim,fontSize:11}}>—</div>}
+                            </div>
+                            {/* current RPM */}
+                            <TInp small value={chk.rpm} onChange={v=>updDCheck(sIdx,chk.id,"rpm",v)} placeholder="RPM"/>
+                            {/* recommendation */}
+                            <div style={{lineHeight:1.3}}>
+                              {chk.rpmAdj?<div style={{fontSize:12,fontWeight:800,color:chk.recColor||C.muted,marginBottom:2}}>{chk.rpmAdj}</div>:null}
+                              <div style={{fontSize:10,color:chk.recColor||C.dim}}>{chk.rec}</div>
+                            </div>
+                            {/* delete */}
+                            <button onClick={()=>removeDCheck(sIdx,chk.id)} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:16,padding:0,lineHeight:1,textAlign:"center"}}>×</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+
+                  </Card>
+                )}
+
+                {/* density trend chart */}
+                {checkResults.filter(r=>r.calcRho!=null).length>1&&(()=>{
+                  const pts=checkResults.filter(r=>r.calcRho!=null);
+                  const vals=pts.map(r=>r.calcRho);
+                  const maxRho=Math.max(...vals,tgtRhoSI||0)*1.06;
+                  const minRho=Math.min(...vals,tgtRhoSI||0)*0.94;
+                  const W=600,H=140,padL=48,padR=20,padT=16,padB=24;
+                  const toX=i=>padL+(i/(pts.length-1))*(W-padL-padR);
+                  const toY=v=>padT+((maxRho-v)/(maxRho-minRho))*(H-padT-padB);
+                  const tgtY=tgtRhoSI>0?toY(tgtRhoSI):null;
+                  const polyPts=pts.map((r,i)=>`${toX(i)},${toY(r.calcRho)}`).join(" ");
+                  return(
+                    <Card>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                        <STitle color={C.purple}>Density Trend — {sess?.name}</STitle>
+                        <div style={{display:"flex",gap:14,fontSize:10,color:C.muted}}>
+                          <span><span style={{color:C.green}}>— —</span> Target</span>
+                          <span><span style={{color:C.amber}}>···</span> ±5%</span>
+                          <span><span style={{color:C.purple}}>——</span> Measured</span>
+                        </div>
+                      </div>
+                      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{overflow:"visible"}}>
+                        {/* grid lines */}
+                        {[0,0.25,0.5,0.75,1].map(f=>{
+                          const yy=padT+(H-padT-padB)*f;
+                          const val=maxRho-(maxRho-minRho)*f;
+                          return(
+                            <g key={f}>
+                              <line x1={padL} x2={W-padR} y1={yy} y2={yy} stroke={C.border} strokeWidth={0.5}/>
+                              <text x={padL-4} y={yy+3} fontSize={8} fill={C.dim} textAnchor="end">{fmt(fRho(val),0)}</text>
+                            </g>
+                          );
+                        })}
+                        {/* ±5% bands */}
+                        {tgtY!=null&&tgtRhoSI>0&&<>
+                          <line x1={padL} x2={W-padR} y1={toY(tgtRhoSI*1.05)} y2={toY(tgtRhoSI*1.05)} stroke={C.amber} strokeWidth={1} strokeDasharray="4,3" opacity={0.7}/>
+                          <line x1={padL} x2={W-padR} y1={toY(tgtRhoSI*0.95)} y2={toY(tgtRhoSI*0.95)} stroke={C.amber} strokeWidth={1} strokeDasharray="4,3" opacity={0.7}/>
+                          <rect x={padL} y={toY(tgtRhoSI*1.05)} width={W-padL-padR} height={toY(tgtRhoSI*0.95)-toY(tgtRhoSI*1.05)} fill={`${C.amber}08`}/>
+                          <line x1={padL} x2={W-padR} y1={tgtY} y2={tgtY} stroke={C.green} strokeWidth={1.5} strokeDasharray="8,4"/>
+                          <text x={W-padR+4} y={tgtY+4} fontSize={8} fill={C.green}>Target</text>
+                        </>}
+                        {/* area fill under line */}
+                        <polygon points={`${polyPts} ${toX(pts.length-1)},${H-padB} ${toX(0)},${H-padB}`} fill={`${C.purple}15`}/>
+                        {/* line */}
+                        <polyline points={polyPts} fill="none" stroke={C.purple} strokeWidth={2.5}/>
+                        {/* data points */}
+                        {pts.map((r,i)=>{
+                          const ok2=Math.abs(r.varPct)<2;
+                          const w2=!ok2&&Math.abs(r.varPct)<6;
+                          return(
+                            <g key={i}>
+                              <circle cx={toX(i)} cy={toY(r.calcRho)} r={5} fill={ok2?C.green:w2?C.amber:C.red} stroke="#060f1e" strokeWidth={1.5}/>
+                              <text x={toX(i)} y={H-padB+12} fontSize={8} fill={C.muted} textAnchor="middle">
+                                {`Check ${i+1}${r.nConts>0?` (#${r.nConts} ${container}s)`:''}`}
+                              </text>
+                              <text x={toX(i)} y={toY(r.calcRho)-8} fontSize={8} fill={ok2?C.green:w2?C.amber:C.red} textAnchor="middle" fontWeight={700}>
+                                {fmt(fRho(r.calcRho),0)}
+                              </text>
+                            </g>
+                          );
+                        })}
+                        <text x={12} y={(H-padT)/2+padT} fontSize={8} fill={C.dim} textAnchor="middle" transform={`rotate(-90,12,${(H-padT)/2+padT})`}>{U.dens}</text>
+                      </svg>
+                    </Card>
+                  );
+                })()}
+
+              </div>
+            );
+          })()}
+
+          {/* ══ CHECKLIST ══ */}
+          {tab==="check"&&(
+            <div style={{display:"flex",flexDirection:"column",gap:14,maxWidth:640}}>
+              <Card style={{border:`1px solid ${clPct===100?"#166534":C.border}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <div style={{fontSize:13,fontWeight:700,color:clPct===100?"#4ade80":C.text}}>{clPct===100?"✓  Ready to Load":"Pre-Loading Readiness"}</div>
+                  <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                    <span style={{fontSize:14,fontWeight:800,color:clPct===100?"#4ade80":C.accent}}>{clPct}%</span>
+                    <button onClick={()=>setChecked({})} style={{background:"none",border:`1px solid ${C.border}`,borderRadius:6,color:C.muted,cursor:"pointer",fontSize:10,fontFamily:"inherit",padding:"4px 10px",fontWeight:600}}>RESET</button>
+                  </div>
+                </div>
+                <div style={{height:5,background:C.panel,borderRadius:999,overflow:"hidden"}}>
+                  <div style={{height:"100%",borderRadius:999,width:`${clPct}%`,background:clPct===100?"#22c55e":`linear-gradient(90deg,${C.accent},#0ea5e9)`,transition:"width 0.3s"}}/>
+                </div>
+                <div style={{fontSize:11,color:C.dim,marginTop:8}}>{clDone} of {CL_ITEMS.length} items confirmed</div>
+              </Card>
+              {CL_GROUPS.map(group=>{
+                const items=CL_ITEMS.filter(i=>i.g===group);
+                const done=items.filter(i=>checked[i.id]).length;
+                return(
+                  <Card key={group} style={{padding:0,overflow:"hidden"}}>
+                    <div style={{padding:"11px 16px",borderBottom:"1px solid #0a1626",display:"flex",justifyContent:"space-between",alignItems:"center",background:"#0a1829"}}>
+                      <span style={{fontSize:11,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",color:C.accent}}>{group}</span>
+                      <span style={{fontSize:11,color:done===items.length?"#4ade80":C.muted,fontWeight:600}}>{done}/{items.length}</span>
+                    </div>
+                    {items.map((item,idx)=>{
+                      const isDone=!!checked[item.id];
+                      return(
+                        <div key={item.id} className="hrow" onClick={()=>setChecked(c=>({...c,[item.id]:!c[item.id]}))}
+                          style={{display:"flex",alignItems:"flex-start",gap:12,padding:"12px 16px",cursor:"pointer",borderBottom:idx<items.length-1?"1px solid #0a1626":"none",background:isDone?"rgba(56,189,248,0.04)":"transparent",transition:"background 0.1s"}}>
+                          <div style={{width:19,height:19,borderRadius:5,flexShrink:0,marginTop:1,border:`2px solid ${isDone?C.accent:C.border}`,background:isDone?C.accent:"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s"}}>
+                            {isDone&&<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><polyline points="1.5,5 4,7.5 8.5,2.5" stroke="#060f1e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </div>
+                          <span style={{fontSize:13,lineHeight:1.55,color:isDone?"#253d5b":C.text,textDecoration:isDone?"line-through":"none",transition:"all 0.15s"}}>{item.t}</span>
+                        </div>
+                      );
+                    })}
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const domRoot=ReactDOM.createRoot(document.getElementById('root'));
+domRoot.render(React.createElement(App,null));
+</script></body></html>
